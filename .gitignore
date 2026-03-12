@@ -1,0 +1,22 @@
+# Environment — never commit secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+
+# Runtime outputs — generated at runtime, not source
+outputs/
+transcripts/
+
+# OS
+.DS_Store
+Thumbs.db

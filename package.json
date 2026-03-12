@@ -1,0 +1,12 @@
+{
+  "name": "dossier-ec-formatter",
+  "version": "1.0.0",
+  "description": "Word doc formatter for Chorus AI Earnings Call Dossier",
+  "private": true,
+  "scripts": {
+    "format": "node formatter/format_report.js"
+  },
+  "dependencies": {
+    "docx": "^8.5.0"
+  }
+}
