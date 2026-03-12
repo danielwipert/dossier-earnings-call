@@ -68,20 +68,20 @@ load_dotenv()
 # Strong structured JSON output, significantly faster than dense 70B+ models.
 GENERATION_MODEL     = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
 
-# Verification A — Qwen family
-# Qwen2.5 72B. Different family from generation (Llama); well-tested for fact-checking.
+# Verification A — Mistral family
+# Mistral Small 24B. Different family from generation (Llama 4); serverless on Together AI.
 # Used by Gate 1a (quote fidelity) and Gate 2 (claim grounding) — runs up to 5x per pipeline.
-VERIFICATION_MODEL_A = "Qwen/Qwen2.5-72B-Instruct-Turbo"
+VERIFICATION_MODEL_A = "mistralai/Mistral-Small-24B-Instruct-2501"
 
 # Verification B — DeepSeek family
 # DeepSeek V3.1. Third distinct family; used by S5 holistic verifier only.
-# Must differ from both generation (Llama 4) and Verification A (Qwen).
+# Must differ from both generation (Llama 4) and Verification A (Mistral).
 VERIFICATION_MODEL_B = "deepseek-ai/DeepSeek-V3.1"
 
 # Scoring models — two independent scorers from different families
 # Disagreements > 3 points trigger adjudication and are disclosed in the report.
-SCORING_MODEL_A = "mistralai/Mistral-Small-24B-Instruct-2501"  # Mistral family
-SCORING_MODEL_B = "Qwen/Qwen2.5-7B-Instruct-Turbo"             # Qwen family
+SCORING_MODEL_A = "Qwen/Qwen2.5-7B-Instruct-Turbo"             # Qwen family — fast
+SCORING_MODEL_B = "meta-llama/Llama-3.3-70B-Instruct-Turbo"    # Llama 3.3 family
 
 MAX_RETRIES = 2  # Max times a section can be retried before Level 2 degradation
 
