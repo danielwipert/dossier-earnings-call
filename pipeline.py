@@ -111,30 +111,51 @@ def call_model(prompt: str, model_id: str, max_tokens: int = 4000) -> str:
         The model's response as a string
 
     Raises:
-        Exception if the API call fails
+        RuntimeError with a clear message if the API call fails
     """
-    response = _get_client().chat.completions.create(
-        model=model_id,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-    )
-
-    return response.choices[0].message.content
+    try:
+        response = _get_client().chat.completions.create(
+            model=model_id,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        raise RuntimeError(
+            f"Together AI call failed — model: {model_id}\n"
+            f"Error: {type(e).__name__}: {e}"
+        ) from e
 
 
 def parse_json_response(raw_response: str) -> dict:
     """
     Parse a JSON response from the model.
-    Models sometimes wrap JSON in markdown code fences (```json ... ```)
-    even when told not to — this handles that gracefully.
+
+    Handles three common failure modes:
+    1. Thinking tags — Qwen3 <think>...</think> blocks before the JSON
+    2. Markdown fences — ```json ... ``` wrappers
+    3. Preamble/postamble — explanatory text before or after the JSON object
+
+    Strategy: strip known wrappers first, then find the outermost { ... } block.
     """
-    # Strip markdown code fences if present
+    import re
+
     text = raw_response.strip()
+
+    # 1. Strip Qwen3 thinking blocks
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+    # 2. Strip markdown code fences
     if text.startswith("```"):
         lines = text.split("\n")
-        # Remove first line (```json or ```) and last line (```)
-        text = "\n".join(lines[1:-1])
-    
+        text = "\n".join(lines[1:-1]).strip()
+
+    # 3. Extract the outermost JSON object — find first { and last }
+    start = text.find("{")
+    end   = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start:end + 1]
+
     return json.loads(text)
 
 
@@ -228,7 +249,7 @@ async def run_s2_agent_async(
     prompt = prompt_fn(transcript, factlist_json)
     
     # Run the blocking model call in a thread pool so it doesn't block other agents
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     raw = await loop.run_in_executor(
         None,
         lambda: call_model(prompt, GENERATION_MODEL, max_tokens=4000)
