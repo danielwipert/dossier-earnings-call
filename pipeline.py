@@ -15,10 +15,16 @@ Environment variables needed in a .env file:
     TOGETHER_API_KEY=your_together_api_key_here
 """
 
+import sys
 import json
 import time
 import uuid
 import asyncio
+
+# Force UTF-8 output on Windows so ✓/✗ characters print correctly
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
 import argparse
 from datetime import datetime
 from typing import Optional
@@ -57,24 +63,25 @@ load_dotenv()
 #
 # =============================================================================
 
-# Generation — Qwen family
-# Qwen3 235B MoE (22B active). Best value for structured JSON + analytical prose.
-GENERATION_MODEL     = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
+# Generation — Llama 4 family (Meta)
+# Llama 4 Maverick: fast MoE architecture (17B active / 128 experts).
+# Strong structured JSON output, significantly faster than dense 70B+ models.
+GENERATION_MODEL     = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
 
-# Verification A — Llama family (Meta)
-# Llama 3.3 70B. Different family from generation; strong reasoning for fact-checking.
+# Verification A — Qwen family
+# Qwen2.5 72B. Different family from generation (Llama); well-tested for fact-checking.
 # Used by Gate 1a (quote fidelity) and Gate 2 (claim grounding) — runs up to 5x per pipeline.
-VERIFICATION_MODEL_A = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+VERIFICATION_MODEL_A = "Qwen/Qwen2.5-72B-Instruct-Turbo"
 
 # Verification B — DeepSeek family
 # DeepSeek V3.1. Third distinct family; used by S5 holistic verifier only.
-# Must differ from both generation (Qwen) and Verification A (Llama).
+# Must differ from both generation (Llama 4) and Verification A (Qwen).
 VERIFICATION_MODEL_B = "deepseek-ai/DeepSeek-V3.1"
 
 # Scoring models — two independent scorers from different families
 # Disagreements > 3 points trigger adjudication and are disclosed in the report.
-SCORING_MODEL_A = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"  # Llama family
-SCORING_MODEL_B = "mistralai/Mistral-Small-24B-Instruct-2501"      # Mistral family
+SCORING_MODEL_A = "mistralai/Mistral-Small-24B-Instruct-2501"  # Mistral family
+SCORING_MODEL_B = "Qwen/Qwen2.5-7B-Instruct-Turbo"             # Qwen family
 
 MAX_RETRIES = 2  # Max times a section can be retried before Level 2 degradation
 
@@ -156,7 +163,13 @@ def parse_json_response(raw_response: str) -> dict:
     if start != -1 and end != -1 and end > start:
         text = text[start:end + 1]
 
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        # Print the tail of the response to help diagnose truncation vs. malformed JSON
+        print(f"  ! JSON parse failed: {e}")
+        print(f"  ! Response tail (last 300 chars): ...{text[-300:]}")
+        raise
 
 
 # =============================================================================
@@ -170,7 +183,7 @@ def run_s1a(transcript: str) -> FactList:
     print("  Running S1a: Fact Extractor...")
     
     prompt = s1a_fact_extractor(transcript)
-    raw = call_model(prompt, GENERATION_MODEL, max_tokens=8000)
+    raw = call_model(prompt, GENERATION_MODEL, max_tokens=32000)
     data = parse_json_response(raw)
     
     # Add the model ID (the prompt template leaves this blank)
@@ -252,7 +265,7 @@ async def run_s2_agent_async(
     loop = asyncio.get_running_loop()
     raw = await loop.run_in_executor(
         None,
-        lambda: call_model(prompt, GENERATION_MODEL, max_tokens=4000)
+        lambda: call_model(prompt, GENERATION_MODEL, max_tokens=8000)
     )
     
     data = parse_json_response(raw)
@@ -310,7 +323,15 @@ def run_gate_2(section: S2SectionOutput, factlist: FactList, retry_count: int = 
     data = parse_json_response(raw)
     data["verifier_model"] = VERIFICATION_MODEL_A
     data["retry_count"] = retry_count
-    
+
+    # Coerce any invalid verdict values — model occasionally returns claim types
+    # (e.g. "derived") instead of verdict types ("aligned"/"absent"/"contradicted")
+    valid_verdicts = {"aligned", "absent", "contradicted"}
+    for verdict in data.get("claim_verdicts", []):
+        if verdict.get("verdict") not in valid_verdicts:
+            print(f"    ! Coercing invalid verdict '{verdict['verdict']}' → 'absent' for {verdict.get('claim_id')}")
+            verdict["verdict"] = "absent"
+
     result = Gate2Result(**data)
     
     if result.passed:
@@ -370,6 +391,34 @@ claims flagged above. Do not change claims that were not flagged.
             return None, gate_result, retry_count
     
     return None, gate_result, retry_count
+
+
+async def run_gate_2_all_async(
+    s2_sections: dict[str, S2SectionOutput],
+    factlist: FactList,
+    transcript: str,
+    prompt_fns: dict
+) -> list[tuple[str, Optional[S2SectionOutput], Gate2Result, int]]:
+    """
+    Run Gate 2 verification for all S2 sections in parallel.
+    Each section's full retry loop runs in a thread, all four run concurrently.
+    Returns a list of (section_id, verified_section, gate_result, retries_used).
+    """
+    print("\nGATE 2: Fact Verification (parallel)")
+    loop = asyncio.get_running_loop()
+
+    async def _verify_one(section_id, section):
+        verified, gate_result, retries = await loop.run_in_executor(
+            None,
+            lambda: verify_section_with_retry(section, factlist, transcript, prompt_fns[section_id])
+        )
+        return section_id, verified, gate_result, retries
+
+    tasks = [
+        _verify_one(sid, section)
+        for sid, section in s2_sections.items()
+    ]
+    return await asyncio.gather(*tasks)
 
 
 # =============================================================================
@@ -557,10 +606,9 @@ def run_pipeline(transcript: str) -> dict:
     s2_sections = asyncio.run(run_s2_all_async(transcript, factlist))
     
     # -------------------------------------------------------------------------
-    # GATE 2: FACT VERIFICATION (per section, with retries)
+    # GATE 2: FACT VERIFICATION (parallel across all sections, with retries)
     # -------------------------------------------------------------------------
-    print("\nGATE 2: Fact Verification")
-    
+
     # Map section IDs to their generating prompt functions (needed for retries)
     prompt_fns = {
         "S2a": s2a_narrative_analyst,
@@ -568,19 +616,19 @@ def run_pipeline(transcript: str) -> dict:
         "S2c": s2c_gap_analyst,
         "S2d": s2d_context_analyst,
     }
-    
+
     verified_sections = {}
     failed_sections = []
-    
-    for section_id, section in s2_sections.items():
-        verified, gate_result, retries = verify_section_with_retry(
-            section, factlist, transcript, prompt_fns[section_id]
-        )
-        
+
+    gate_2_results = asyncio.run(
+        run_gate_2_all_async(s2_sections, factlist, transcript, prompt_fns)
+    )
+
+    for section_id, verified, gate_result, retries in gate_2_results:
         retry_counts[section_id] = retries
         section_grounding_scores[section_id] = gate_result.grounding_score
         section_contradiction_counts[section_id] = gate_result.contradiction_count
-        
+
         if verified is not None:
             verified_sections[section_id] = verified
         else:

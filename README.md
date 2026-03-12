@@ -145,11 +145,11 @@ A FactList failure (Gate 1a) **always** triggers Level 3. No partial output when
 Four distinct model families are used so no family's blind spots carry through the full pipeline.
 
 ```python
-GENERATION_MODEL     = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"   # Qwen family   — S1a, S1b, S2a-d
-VERIFICATION_MODEL_A = "meta-llama/Llama-3.3-70B-Instruct-Turbo"   # Llama family  — Gate 1a, Gate 2
-VERIFICATION_MODEL_B = "deepseek-ai/DeepSeek-V3.1"                  # DeepSeek family — S5
-SCORING_MODEL_A      = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" # Llama family — S3 scorer A
-SCORING_MODEL_B      = "mistralai/Mistral-Small-24B-Instruct-2501"   # Mistral family — S3 scorer B
+GENERATION_MODEL     = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"  # Llama 4 family  — S1a, S1b, S2a-d
+VERIFICATION_MODEL_A = "Qwen/Qwen2.5-72B-Instruct-Turbo"                     # Qwen family     — Gate 1a, Gate 2
+VERIFICATION_MODEL_B = "deepseek-ai/DeepSeek-V3.1"                           # DeepSeek family — S5
+SCORING_MODEL_A      = "mistralai/Mistral-Small-24B-Instruct-2501"            # Mistral family  — S3 scorer A
+SCORING_MODEL_B      = "Qwen/Qwen2.5-7B-Instruct-Turbo"                      # Qwen family     — S3 scorer B
 ```
 
 All models are called via Together AI's OpenAI-compatible endpoint:
