@@ -9,10 +9,10 @@ Usage:
     python pipeline.py --transcript path/to/transcript.txt
 
 Requirements:
-    pip install huggingface_hub pydantic python-dotenv
+    pip install openai pydantic python-dotenv
 
 Environment variables needed in a .env file:
-    HF_TOKEN=your_huggingface_token_here
+    TOGETHER_API_KEY=your_together_api_key_here
 """
 
 import json
@@ -25,7 +25,7 @@ from typing import Optional
 from dotenv import load_dotenv
 import os
 
-from huggingface_hub import InferenceClient
+from openai import OpenAI
 
 # Import our schemas, prompts, and transcript fetcher
 from core.transcript_fetcher import fetch_transcript, validate_transcript
@@ -50,50 +50,59 @@ load_dotenv()
 # =============================================================================
 
 # Generation models (larger, more capable — for producing content)
-GENERATION_MODEL = "Qwen/Qwen2.5-72B-Instruct"
+GENERATION_MODEL    = "Qwen/Qwen2.5-72B-Instruct-Turbo"
 
 # Verification models (must differ from generation — for checking content)
-VERIFICATION_MODEL_A = "Qwen/Qwen2.5-7B-Instruct"   # Gate 2
-VERIFICATION_MODEL_B = "meta-llama/Llama-3.2-3B-Instruct"  # S5 (different family)
+VERIFICATION_MODEL_A = "Qwen/Qwen2.5-7B-Instruct-Turbo"         # Gate 2
+VERIFICATION_MODEL_B = "meta-llama/Llama-3.2-3B-Instruct-Turbo" # S5 (different family)
 
 # Scoring models (two independent scorers)
-SCORING_MODEL_A = "Qwen/Qwen2.5-7B-Instruct"
-SCORING_MODEL_B = "meta-llama/Llama-3.2-3B-Instruct"
+SCORING_MODEL_A = "Qwen/Qwen2.5-7B-Instruct-Turbo"
+SCORING_MODEL_B = "meta-llama/Llama-3.2-3B-Instruct-Turbo"
 
 MAX_RETRIES = 2  # Max times a section can be retried before Level 2 degradation
 
 
 # =============================================================================
 # LLM CALLER
-# Single function for all model calls. Handles the HuggingFace API format
-# and returns the raw text response.
+# Single function for all model calls. Uses Together AI's OpenAI-compatible
+# API and returns the raw text response.
 # =============================================================================
+
+_together_client = None
+
+def _get_client() -> OpenAI:
+    """Return a cached Together AI client."""
+    global _together_client
+    if _together_client is None:
+        _together_client = OpenAI(
+            api_key=os.getenv("TOGETHER_API_KEY"),
+            base_url="https://api.together.xyz/v1",
+        )
+    return _together_client
+
 
 def call_model(prompt: str, model_id: str, max_tokens: int = 4000) -> str:
     """
-    Call a HuggingFace model and return the response text.
-    
+    Call a Together AI model and return the response text.
+
     Args:
         prompt: The fully formatted prompt string
-        model_id: The HuggingFace model identifier
+        model_id: The Together AI model identifier
         max_tokens: Maximum tokens to generate
-    
+
     Returns:
         The model's response as a string
-    
+
     Raises:
         Exception if the API call fails
     """
-    client = InferenceClient(
+    response = _get_client().chat.completions.create(
         model=model_id,
-        token=os.getenv("HF_TOKEN")
-    )
-    
-    response = client.chat_completion(
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens
+        max_tokens=max_tokens,
     )
-    
+
     return response.choices[0].message.content
 
 
