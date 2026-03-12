@@ -27,7 +27,8 @@ import os
 
 from huggingface_hub import InferenceClient
 
-# Import our schemas and prompts
+# Import our schemas, prompts, and transcript fetcher
+from core.transcript_fetcher import fetch_transcript, validate_transcript
 from core.schemas import (
     FactList, Fact, Gate1aResult, S1bOutput, S2SectionOutput,
     Gate2Result, S3Output, DimensionScore, S5Output,
@@ -712,16 +713,58 @@ def _build_run_log(
 # =============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Chorus AI Earnings Call Dossier Pipeline")
-    parser.add_argument("--transcript", required=True, help="Path to the transcript text file")
-    parser.add_argument("--output", default="report_output.json", help="Path to save the output JSON")
+    parser = argparse.ArgumentParser(
+        description="Chorus AI Earnings Call Dossier Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  Fetch transcript from FMP API and run pipeline:
+    python pipeline.py --ticker MSFT --year 2026 --quarter 2
+
+  Use a local transcript file:
+    python pipeline.py --transcript transcripts/msft_q2_2026.txt
+
+  Specify output location:
+    python pipeline.py --ticker MSFT --year 2026 --quarter 2 --output outputs/msft_q2.json
+        """
+    )
+
+    # Transcript source — one of these two is required
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--ticker", help="Stock ticker symbol, e.g. MSFT (requires --year and --quarter)")
+    source.add_argument("--transcript", help="Path to a local transcript .txt file")
+
+    parser.add_argument("--year",    type=int, choices=range(2000, 2100), metavar="YEAR",
+                        help="Calendar year of the earnings call, e.g. 2026 (used with --ticker)")
+    parser.add_argument("--quarter", type=int, choices=[1, 2, 3, 4],
+                        help="Quarter (1-4) (used with --ticker)")
+    parser.add_argument("--output",  default="outputs/report_output.json",
+                        help="Path to save the output JSON (default: outputs/report_output.json)")
+
     args = parser.parse_args()
-    
-    # Load transcript
-    print(f"Loading transcript from {args.transcript}...")
-    with open(args.transcript, "r", encoding="utf-8") as f:
-        transcript_text = f.read()
-    
+
+    # Validate --ticker requires --year and --quarter
+    if args.ticker and not (args.year and args.quarter):
+        parser.error("--ticker requires both --year and --quarter")
+
+    # Fetch or load transcript
+    if args.ticker:
+        transcript_text = fetch_transcript(ticker=args.ticker, year=args.year, quarter=args.quarter)
+    else:
+        transcript_text = fetch_transcript(filepath=args.transcript)
+
+    # Validate before handing to pipeline
+    validation = validate_transcript(transcript_text)
+    if not validation["valid"]:
+        for error in validation["errors"]:
+            print(f"✗ {error}")
+        exit(1)
+    for issue in validation["issues"]:
+        print(f"⚠ {issue}")
+
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+
     # Run pipeline
     result = run_pipeline(transcript_text)
     
