@@ -194,10 +194,7 @@ def list_available_transcripts(ticker: str, limit: int = 10) -> list[dict]:
 
 def _load_from_file(filepath: str) -> str:
     """
-    Load a transcript from a local text file.
-
-    Accepts .txt files. If you have a PDF, copy-paste the text into a .txt
-    file first — PDF parsing adds complexity not worth the tradeoff here.
+    Load a transcript from a local .txt or .pdf file.
 
     The file should be the raw transcript text as you'd read it:
     speaker names, their remarks, Q&A section, etc.
@@ -214,15 +211,31 @@ def _load_from_file(filepath: str) -> str:
         with open(path, "r", encoding="utf-8") as f:
             raw_content = f.read()
 
+    elif suffix == ".pdf":
+        print(f"Loading transcript from PDF: {filepath}")
+        try:
+            import pdfplumber
+        except ImportError:
+            raise RuntimeError(
+                "pdfplumber is required to read PDF files.\n"
+                "Run: pip install pdfplumber"
+            )
+        pages = []
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    pages.append(text)
+        raw_content = "\n\n".join(pages)
+
     else:
         raise RuntimeError(
             f"Unsupported file type: {suffix}\n"
-            f"Supported types: .txt\n"
-            f"If you have a PDF, copy the text and save it as a .txt file."
+            f"Supported types: .txt, .pdf"
         )
 
     if not raw_content.strip():
-        raise RuntimeError(f"File is empty: {filepath}")
+        raise RuntimeError(f"File is empty or no text could be extracted: {filepath}")
 
     transcript = _clean_transcript(raw_content)
     print(f"✓ Transcript loaded: {len(transcript.split())} words, {len(transcript)} characters")
