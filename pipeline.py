@@ -550,7 +550,8 @@ def run_pipeline(transcript: str) -> dict:
             run_id, factlist, gate_1a_result,
             section_grounding_scores, section_contradiction_counts, retry_counts,
             DegradationLevel.PIPELINE_HALT, elapsed,
-            FinalOutputStatus.HALTED, omitted_sections, []
+            FinalOutputStatus.HALTED, omitted_sections, [],
+            s1b_output=s1b_output,
         )
         return {
             "status": "halted",
@@ -588,7 +589,8 @@ def run_pipeline(transcript: str) -> dict:
                 run_id, factlist, gate_1a_result,
                 section_grounding_scores, section_contradiction_counts, retry_counts,
                 DegradationLevel.PIPELINE_HALT, elapsed,
-                FinalOutputStatus.HALTED, omitted_sections, safety_flags_triggered
+                FinalOutputStatus.HALTED, omitted_sections, safety_flags_triggered,
+                s1b_output=s1b_output, s3_output=s3_output,
             )
             return {
                 "status": "halted",
@@ -614,7 +616,8 @@ def run_pipeline(transcript: str) -> dict:
         run_id, factlist, gate_1a_result,
         section_grounding_scores, section_contradiction_counts, retry_counts,
         degradation_level, elapsed,
-        final_status, omitted_sections, safety_flags_triggered
+        final_status, omitted_sections, safety_flags_triggered,
+        s1b_output=s1b_output, s3_output=s3_output,
     )
     
     report = {
@@ -667,20 +670,32 @@ def _build_run_log(
     elapsed: float,
     final_status: FinalOutputStatus,
     omitted_sections: list,
-    safety_flags: list
+    safety_flags: list,
+    s1b_output: Optional[S1bOutput] = None,
+    s3_output: Optional[S3Output] = None,
 ) -> PipelineRunLog:
     """Build the observability log for this pipeline run."""
-    
+
     # Count fact types
     fact_type_dist = {}
     for fact in factlist.facts:
         ft = fact.fact_type.value
         fact_type_dist[ft] = fact_type_dist.get(ft, 0) + 1
-    
+
+    # Pull ticker/quarter from S1b when available
+    company_ticker = s1b_output.ticker if s1b_output else "unknown"
+    quarter        = s1b_output.quarter if s1b_output else "unknown"
+
+    # Pull model agreement per dimension from S3 when available
+    radar_agreement = (
+        {d.dimension: d.models_agreed for d in s3_output.dimension_scores}
+        if s3_output else {}
+    )
+
     return PipelineRunLog(
         run_id=run_id,
-        company_ticker="unknown",  # Filled in post-run from S1b output
-        quarter="unknown",
+        company_ticker=company_ticker,
+        quarter=quarter,
         transcript_token_count=factlist.transcript_token_count,
         fact_count=len(factlist.facts),
         fact_types_distribution=fact_type_dist,
@@ -688,7 +703,7 @@ def _build_run_log(
         per_section_grounding_score=section_grounding,
         per_section_contradiction_count=section_contradictions,
         retry_count_per_section=retry_counts,
-        radar_score_agreement={},  # Populated by S3
+        radar_score_agreement=radar_agreement,
         degradation_level_reached=degradation_level,
         total_tokens_consumed=0,   # Would need token counting per call to populate
         total_latency_seconds=elapsed,
