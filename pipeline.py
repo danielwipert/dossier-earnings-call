@@ -45,20 +45,36 @@ load_dotenv()
 
 # =============================================================================
 # MODEL CONFIGURATION
-# Two model families to satisfy Principle 13 (Second-Order Self-Observation):
-# generation and verification must not share the same model.
+#
+# Separation principle (Principle 13): no model may verify its own output.
+# Four distinct families are used to eliminate shared blind spots:
+#
+#   Generation   → Qwen    (Qwen3 235B)
+#   Verification A → Llama  (Llama 3.3 70B)   — Gate 1a, Gate 2
+#   Verification B → DeepSeek (V3.1)           — S5 holistic verifier
+#   Scoring A    → Llama    (Llama 3.1 8B)     — S3 first scorer
+#   Scoring B    → Mistral  (Mistral Small 24B) — S3 second scorer
+#
 # =============================================================================
 
-# Generation models (larger, more capable — for producing content)
-GENERATION_MODEL    = "Qwen/Qwen2.5-72B-Instruct-Turbo"
+# Generation — Qwen family
+# Qwen3 235B MoE (22B active). Best value for structured JSON + analytical prose.
+GENERATION_MODEL     = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
 
-# Verification models (must differ from generation — for checking content)
-VERIFICATION_MODEL_A = "Qwen/Qwen2.5-7B-Instruct-Turbo"         # Gate 2
-VERIFICATION_MODEL_B = "meta-llama/Llama-3.2-3B-Instruct-Turbo" # S5 (different family)
+# Verification A — Llama family (Meta)
+# Llama 3.3 70B. Different family from generation; strong reasoning for fact-checking.
+# Used by Gate 1a (quote fidelity) and Gate 2 (claim grounding) — runs up to 5x per pipeline.
+VERIFICATION_MODEL_A = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
 
-# Scoring models (two independent scorers)
-SCORING_MODEL_A = "Qwen/Qwen2.5-7B-Instruct-Turbo"
-SCORING_MODEL_B = "meta-llama/Llama-3.2-3B-Instruct-Turbo"
+# Verification B — DeepSeek family
+# DeepSeek V3.1. Third distinct family; used by S5 holistic verifier only.
+# Must differ from both generation (Qwen) and Verification A (Llama).
+VERIFICATION_MODEL_B = "deepseek-ai/DeepSeek-V3.1"
+
+# Scoring models — two independent scorers from different families
+# Disagreements > 3 points trigger adjudication and are disclosed in the report.
+SCORING_MODEL_A = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"  # Llama family
+SCORING_MODEL_B = "mistralai/Mistral-Small-24B-Instruct-2501"      # Mistral family
 
 MAX_RETRIES = 2  # Max times a section can be retried before Level 2 degradation
 

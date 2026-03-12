@@ -142,20 +142,22 @@ A FactList failure (Gate 1a) **always** triggers Level 3. No partial output when
 ## Model Configuration
 
 **Key principle: generation and verification must use different models (Principle 13).**
-Same-model self-verification shares the same blind spots — it adds no real verification value.
+Four distinct model families are used so no family's blind spots carry through the full pipeline.
 
 ```python
-GENERATION_MODEL    = "Qwen/Qwen2.5-72B-Instruct"   # S1a, S1b, S2a-d
-VERIFICATION_MODEL_A = "Qwen/Qwen2.5-7B-Instruct"    # Gate 1a, Gate 2
-VERIFICATION_MODEL_B = "meta-llama/Llama-3.2-3B-Instruct"  # S5 (different family)
-SCORING_MODEL_A     = "Qwen/Qwen2.5-7B-Instruct"     # S3 first scorer
-SCORING_MODEL_B     = "meta-llama/Llama-3.2-3B-Instruct"   # S3 second scorer
+GENERATION_MODEL     = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"   # Qwen family   — S1a, S1b, S2a-d
+VERIFICATION_MODEL_A = "meta-llama/Llama-3.3-70B-Instruct-Turbo"   # Llama family  — Gate 1a, Gate 2
+VERIFICATION_MODEL_B = "deepseek-ai/DeepSeek-V3.1"                  # DeepSeek family — S5
+SCORING_MODEL_A      = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" # Llama family — S3 scorer A
+SCORING_MODEL_B      = "mistralai/Mistral-Small-24B-Instruct-2501"   # Mistral family — S3 scorer B
 ```
 
-All models are called via HuggingFace `InferenceClient` using the chat completions format:
+All models are called via Together AI's OpenAI-compatible endpoint:
 ```python
-client = InferenceClient(model=model_id, token=os.getenv("HF_TOKEN"))
-response = client.chat_completion(
+from openai import OpenAI
+client = OpenAI(api_key=os.getenv("TOGETHER_API_KEY"), base_url="https://api.together.xyz/v1")
+response = client.chat.completions.create(
+    model=model_id,
     messages=[{"role": "user", "content": prompt}],
     max_tokens=4000
 )
