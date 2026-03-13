@@ -23,9 +23,14 @@ import os
 import subprocess
 import tempfile
 import argparse
+import sys
 from pathlib import Path
 
-import sys
+# Force UTF-8 output on Windows so ✓/✗ characters print correctly
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from generate_radar_chart import generate_radar_chart, DIMENSION_KEYS
@@ -62,8 +67,10 @@ def format_report(
             "The pipeline did not produce a report — check the run log for the halt reason."
         )
 
-    snapshot = report_data.get("snapshot", {})
-    radar_scores = report_data.get("radar_scores", {})
+    # The pipeline wraps report content under a "report" key
+    _report = report_data.get("report", report_data)
+    snapshot = _report.get("snapshot", {})
+    radar_scores = _report.get("radar_scores", {})
 
     # Auto-generate output filename if not provided
     if not output_docx_path:
@@ -106,11 +113,13 @@ def format_report(
         # -------------------------------------------------------------------------
         print("\nStep 2: Building Word document...")
 
+        # The pipeline wraps everything under a "report" key
+        report = report_data.get("report", report_data)
         formatter_input = {
-            "snapshot":     report_data.get("snapshot", {}),
-            "sections":     report_data.get("sections", {}),
-            "radar_scores": report_data.get("radar_scores", {}),
-            "verification": report_data.get("verification", {}),
+            "snapshot":     report.get("snapshot", {}),
+            "sections":     report.get("sections", {}),
+            "radar_scores": report.get("radar_scores", {}),
+            "verification": report.get("verification", {}),
         }
 
         with tempfile.NamedTemporaryFile(
