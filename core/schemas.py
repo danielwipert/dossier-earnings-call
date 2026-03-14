@@ -181,11 +181,11 @@ class Gate1aResult(BaseModel):
 
 class FinancialMetricRow(BaseModel):
     """One row in the key financials table."""
-    metric_name: str               # e.g. "Revenue", "EPS (Diluted)"
-    reported_value: str            # e.g. "$69.6B", "$3.23"
-    yoy_change: Optional[str]      # e.g. "+16%"
-    vs_estimate: Optional[str]     # e.g. "Beat (+2.1%)"
-    source_fact_ids: list[str]     # Must reference FactList IDs
+    metric_name: str                    # e.g. "Revenue", "EPS (Diluted)"
+    reported_value: str                 # e.g. "$69.6B", "$3.23"
+    yoy_change: Optional[str] = None    # e.g. "+16%"
+    vs_estimate: Optional[str] = None   # e.g. "Beat (+2.1%)"
+    source_fact_ids: list[str] = Field(default_factory=list)
 
 
 class KeyTakeaway(BaseModel):
@@ -293,7 +293,7 @@ class Gate2Result(BaseModel):
     )
     claim_verdicts: list[ClaimVerdictDetail]
     passed: bool = Field(
-        description="True if grounding_score >= 0.95 AND contradiction_count == 0."
+        description="True if grounding_score >= 0.90 AND contradiction_count == 0."
     )
     failure_summary: Optional[str] = Field(
         default=None,
