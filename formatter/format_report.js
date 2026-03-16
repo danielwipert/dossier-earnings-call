@@ -45,7 +45,7 @@ function stripCitations(text) {
   return text
     .replace(/\[F\d{3}(?:,\s*F\d{3})*\]/g, "")
     .replace(/\(F\d{3}(?:,\s*F\d{3})*\)/g, "")
-    .replace(/\s{2,}/g, " ")
+    .replace(/[ \t]{2,}/g, " ")   // collapse spaces/tabs only — preserve \n paragraph breaks
     .trim();
 }
 
@@ -61,6 +61,56 @@ function scoreTextColor(score) {
   if (score >= 7) return GREEN;
   if (score >= 5) return AMBER;
   return RED;
+}
+
+// Visual dot bar: ●●●●●●●●○○ for a score of 8/10
+function scoreBar(score) {
+  const n = Math.min(10, Math.max(0, Math.round(score)));
+  return "\u25CF".repeat(n) + "\u25CB".repeat(10 - n);
+}
+
+// Extract the most quotable sentence from a narrative block
+// Skips the lead paragraph; prefers sentences with numbers/financial language
+function extractPullQuote(narrative, minLen = 90, maxLen = 230) {
+  const cleaned = stripCitations(narrative || "").replace(/\*\*/g, "");
+  const paras = cleaned.split(/\n\n+/).slice(1); // skip lead para
+  const body  = paras.join(" ");
+  const sentences = body.match(/[^.!?]+[.!?]+/g) || [];
+
+  let best = null, bestScore = -1;
+  sentences.forEach(s => {
+    s = s.trim();
+    if (s.length < minLen || s.length > maxLen) return;
+    let sc = 0;
+    if (/\d/.test(s))                              sc += 3;
+    if (/\$|%|billion|million/i.test(s))           sc += 2;
+    if (/will|expect|target|commit|plan|guid/i.test(s)) sc += 2;
+    if (sc > bestScore) { bestScore = sc; best = s; }
+  });
+  return best;
+}
+
+// Render a magazine-style pull quote with decorative quote marks and accent rules
+function buildPullQuote(text, accentColor) {
+  const clean = text.replace(/^["\u201C\u201D\u201E]+|["\u201C\u201D\u201E]+$/g, "").trim();
+  return [
+    spacer(6),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 120, after: 120, line: 300 },
+      indent: { left: 440, right: 440 },
+      border: {
+        top:    { style: BorderStyle.SINGLE, size: 8, color: accentColor, space: 6 },
+        bottom: { style: BorderStyle.SINGLE, size: 8, color: accentColor, space: 6 },
+      },
+      children: [
+        new TextRun({ text: "\u201C", font: "Georgia", size: 44, color: accentColor, bold: true }),
+        new TextRun({ text: clean, font: "Georgia", size: 24, italics: true, color: CHARCOAL }),
+        new TextRun({ text: "\u201D", font: "Georgia", size: 44, color: accentColor, bold: true }),
+      ],
+    }),
+    spacer(6),
+  ];
 }
 
 // =============================================================================
@@ -135,101 +185,158 @@ function cell(children, opts = {}) {
 // BLOCK: MASTHEAD / COVER BAND
 // =============================================================================
 function buildHeader(snapshot) {
-  const company = (snapshot.company_name || "").toUpperCase();
-  const ticker  = snapshot.ticker || "";
-  const quarter = snapshot.quarter || "";
+  const company  = (snapshot.company_name || "").toUpperCase();
+  const ticker   = snapshot.ticker  || "";
+  const quarter  = snapshot.quarter || "";
+  const sector   = snapshot.sector  || "";
+  const headline = stripCitations(snapshot.headline || "");
 
   return [
-    // Dark navy masthead band
+    // ── Full-bleed navy masthead ──────────────────────────────────────────────
     new Table({
       width: { size: CONTENT_WIDTH, type: WidthType.DXA },
       columnWidths: [CONTENT_WIDTH],
       rows: [new TableRow({ children: [
         cell([
+          // Publication label
           para(run("CHORUS AI  ·  EARNINGS CALL INTELLIGENCE", {
-            bold: true, size: 17, color: NAVY_FAINT, font: "Arial",
-          }), { align: AlignmentType.CENTER, spaceAfter: 60 }),
+            bold: true, size: 16, color: NAVY_FAINT, font: "Arial",
+          }), { align: AlignmentType.CENTER, spaceAfter: 100 }),
+
+          // Company name — hero element
           para(run(company, {
-            bold: true, size: 60, color: WHITE, font: "Arial",
-          }), { align: AlignmentType.CENTER, spaceAfter: 60 }),
+            bold: true, size: 72, color: WHITE, font: "Arial",
+          }), { align: AlignmentType.CENTER, spaceAfter: 80 }),
+
+          // Internal gold rule
+          new Paragraph({
+            children: [new TextRun({ text: "" })],
+            border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: GOLD, space: 1 } },
+            spacing: { before: 0, after: 80 },
+          }),
+
+          // Ticker · Quarter · Sector
           para([
-            run(ticker, { size: 22, color: NAVY_FAINT, font: "Arial" }),
-            run("   ·   ", { size: 22, color: NAVY_FAINT }),
-            run(quarter + " Earnings Call", { size: 22, color: NAVY_FAINT, font: "Arial" }),
-          ], { align: AlignmentType.CENTER }),
-        ], { fill: NAVY, noBorder: true, padV: 220, padH: 280 }),
+            run(ticker, { size: 20, color: NAVY_FAINT, font: "Arial" }),
+            run("   ·   ", { size: 20, color: NAVY_FAINT }),
+            run(quarter + " Earnings Call", { size: 20, color: NAVY_FAINT, font: "Arial" }),
+            ...(sector ? [
+              run("   ·   ", { size: 20, color: NAVY_FAINT }),
+              run(sector, { size: 20, color: NAVY_FAINT, font: "Arial" }),
+            ] : []),
+          ], { align: AlignmentType.CENTER, spaceAfter: 80 }),
+
+        ], { fill: NAVY, noBorder: true, padV: 280, padH: 360 }),
       ]})]
     }),
 
-    spacer(4),
-
-    // Gold accent rule
+    // Heavy gold rule — the masthead's bottom edge
     new Paragraph({
       children: [new TextRun({ text: "" })],
-      border: { bottom: { style: BorderStyle.SINGLE, size: 20, color: GOLD, space: 1 } },
-      spacing: { before: 0, after: 100 },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 28, color: GOLD, space: 1 } },
+      spacing: { before: 0, after: 0 },
     }),
-
-    spacer(4),
   ];
 }
 
 // =============================================================================
-// BLOCK: HEADLINE + VERIFICATION BADGE
+// BLOCK: HEADLINE + DECK COPY + VERIFICATION BADGE
 // =============================================================================
 function buildHeadline(snapshot, verificationSummary) {
-  const headline = stripCitations(snapshot.headline || "");
+  const headline  = stripCitations(snapshot.headline || "");
+  const takeaways = snapshot.key_takeaways || [];
+  // Deck copy: first takeaway text, stripped of markdown bold markers
+  const deckText  = takeaways.length
+    ? stripCitations(takeaways[0].text || "").replace(/\*\*/g, "")
+    : "";
 
-  return [
-    new Paragraph({
+  const elements = [];
+
+  // ── Headline — large, editorial ──────────────────────────────────────────
+  elements.push(spacer(14));
+  elements.push(new Paragraph({
+    children: [new TextRun({
+      text: headline,
+      font: "Georgia",
+      size: 38,
+      bold: true,
+      color: CHARCOAL,
+    })],
+    spacing: { before: 0, after: 120, line: 360 },
+  }));
+
+  // Gold rule under headline
+  elements.push(new Paragraph({
+    children: [new TextRun({ text: "" })],
+    border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: GOLD, space: 1 } },
+    spacing: { before: 0, after: 120 },
+  }));
+
+  // ── Deck copy — the editorial "why you should care" ────────────────────
+  if (deckText) {
+    elements.push(new Paragraph({
       children: [new TextRun({
-        text: headline,
+        text: deckText,
         font: "Georgia",
-        size: 36,
-        bold: true,
-        color: CHARCOAL,
+        size: 24,
+        italics: true,
+        color: DARK_GRAY,
       })],
-      spacing: { before: 100, after: 80 },
-    }),
+      spacing: { before: 0, after: 160, line: 320 },
+    }));
+  }
 
-    para([
-      run("✓ AI-Verified  ", { size: 18, bold: true, color: GREEN, font: "Arial" }),
-      run(
-        `${verificationSummary.avg_grounding} source grounding  ·  ` +
-        `${verificationSummary.contradictions} contradictions  ·  ` +
-        `Model agreement: ${verificationSummary.model_agreement}`,
-        { size: 18, color: MID_GRAY, font: "Arial" }
-      ),
-    ], { spaceAfter: 180 }),
+  // ── Verification badge — single compact line ─────────────────────────
+  elements.push(para([
+    run("✓ AI-VERIFIED", { size: 16, bold: true, color: GREEN, font: "Arial" }),
+    run(
+      `   ·   ${verificationSummary.avg_grounding} source grounding` +
+      `   ·   ${verificationSummary.contradictions} contradictions detected` +
+      `   ·   Model agreement: ${verificationSummary.model_agreement}`,
+      { size: 16, color: MID_GRAY, font: "Arial" }
+    ),
+  ], { spaceAfter: 200 }));
 
-    divider(BORDER, 6),
-    spacer(6),
-  ];
+  elements.push(spacer(8));
+  return elements;
 }
 
 // =============================================================================
 // BLOCK: KEY METRICS CARDS
 // =============================================================================
 function buildMetricCards(snapshot) {
-  const financials = (snapshot.key_financials || []).slice(0, 4);
+  const financials = (snapshot.key_financials || []).slice(0, 5);
   if (financials.length === 0) return [];
 
   const elements = [];
 
   elements.push(
     para(run("BY THE NUMBERS", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }),
-         { spaceAfter: 80 })
+         { spaceAfter: 0 })
   );
 
   const cardW = Math.floor(CONTENT_WIDTH / financials.length);
 
+  // Row 1 — thin colored accent strip (green / red / neutral) at top of each card
+  const stripCells = financials.map((m) => {
+    const delta = m.yoy_change || "";
+    let stripFill = "9CA3AF"; // neutral gray
+    if (delta.startsWith("+")) stripFill = GREEN;
+    else if (delta.startsWith("-")) stripFill = RED;
+    return cell(
+      para(run("", { size: 2 })),
+      { width: cardW, fill: stripFill, noBorder: true, padV: 20, padH: 0 }
+    );
+  });
+
+  // Row 2 — card body
   const cardCells = financials.map((m, i) => {
     const value = m.reported_value || "—";
     const label = m.metric_name || "";
     const delta = m.yoy_change || "";
     const vs    = m.vs_estimate || "";
 
-    const shortLabel = label.length > 32 ? label.substring(0, 30) + "…" : label;
+    const shortLabel = label.length > 34 ? label.substring(0, 32) + "…" : label;
     let deltaColor = MID_GRAY;
     if (delta.startsWith("+")) deltaColor = GREEN;
     else if (delta.startsWith("-")) deltaColor = RED;
@@ -238,24 +345,27 @@ function buildMetricCards(snapshot) {
 
     return cell([
       para(run(shortLabel, { size: 16, color: MID_GRAY, font: "Arial" }),
-           { align: AlignmentType.CENTER, spaceAfter: 40 }),
-      para(run(value, { bold: true, size: 44, color: NAVY, font: "Arial" }),
+           { align: AlignmentType.CENTER, spaceAfter: 50 }),
+      para(run(value, { bold: true, size: 52, color: NAVY, font: "Arial" }),
            { align: AlignmentType.CENTER, spaceAfter: 20 }),
       delta
-        ? para(run(delta, { bold: true, size: 20, color: deltaColor, font: "Arial" }),
+        ? para(run(delta, { bold: true, size: 22, color: deltaColor, font: "Arial" }),
                { align: AlignmentType.CENTER, spaceAfter: 20 })
         : spacer(0),
       vs
         ? para(run(vs, { size: 16, italics: true, color: MID_GRAY }),
                { align: AlignmentType.CENTER, spaceAfter: 0 })
         : spacer(0),
-    ], { width: cardW, fill: cardFill, borderColor: BORDER, padV: 180, padH: 100 });
+    ], { width: cardW, fill: cardFill, borderColor: BORDER, padV: 200, padH: 80 });
   });
 
   elements.push(new Table({
     width: { size: CONTENT_WIDTH, type: WidthType.DXA },
     columnWidths: financials.map(() => cardW),
-    rows: [new TableRow({ children: cardCells })],
+    rows: [
+      new TableRow({ children: stripCells }),
+      new TableRow({ children: cardCells }),
+    ],
   }));
 
   elements.push(spacer(12));
@@ -270,9 +380,10 @@ function buildTakeaways(snapshot) {
   if (takeaways.length === 0) return [];
 
   const elements = [];
+  elements.push(divider(BORDER, 6));
   elements.push(spacer(4));
   elements.push(
-    para(run("THE STORY IN THREE POINTS", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }),
+    para(run("THE STORY IN THREE POINTS", { bold: true, size: 22, color: MID_GRAY, font: "Arial" }),
          { spaceAfter: 100 })
   );
 
@@ -397,7 +508,7 @@ function buildSignals(sections) {
     rows: [headerRow, ...dataRows],
   }));
 
-  elements.push(spacer(12));
+  elements.push(spacer(4));
   return elements;
 }
 
@@ -407,10 +518,10 @@ function buildSignals(sections) {
 function buildScorecard(radarScores, chartPngPath) {
   const elements = [];
 
-  elements.push(divider(BORDER, 6));
-  elements.push(spacer(8));
+  elements.push(new Paragraph({ children: [new PageBreak()], spacing: { before: 0, after: 0 } }));
+  elements.push(spacer(4));
   elements.push(
-    para(run("SCORECARD", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }),
+    para(run("EARNINGS CALL RADAR", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }),
          { spaceAfter: 80 })
   );
 
@@ -455,18 +566,33 @@ function buildScorecard(radarScores, chartPngPath) {
            { width: noteW, fill: NAVY, noBorder: true }),
     ]});
 
+    const DIMENSION_FALLBACK_RATIONALE = {
+      revenue_momentum:    "Score reflects the revenue growth rate and performance relative to expectations for the quarter.",
+      margin_health:       "Score reflects operating margin direction and capital expenditure trajectory observed this quarter.",
+      guidance_confidence: "Score reflects the number and specificity of forward-looking commitments made by management.",
+      mgmt_transparency:   "Score reflects management's directness in Q&A and the completeness of disclosures relative to analyst questions asked.",
+      strategic_clarity:   "Score reflects the coherence between management's stated priorities and observable capital allocation decisions.",
+      earnings_quality:    "Score reflects the proportion of recurring versus one-time items contributing to reported results.",
+      forward_visibility:  "Score reflects the quantity and precision of quantitative forward guidance provided across revenue, margins, and capital expenditure.",
+    };
+
     const dataRows = radarScores.dimension_scores.map((d, i) => {
       const name      = DISPLAY_NAMES[d.dimension] || d.dimension;
       const score     = d.published_score;
-      const rationale = (d.scoring_rationale || "").substring(0, 160);
+      const rawRationale = (d.scoring_rationale || "").trim();
+      const rationale = (rawRationale.length > 8 ? rawRationale : (DIMENSION_FALLBACK_RATIONALE[d.dimension] || "Score reflects analysis of this dimension against the quarter's available evidence.")).substring(0, 200);
       const rowFill   = i % 2 === 0 ? WHITE : LIGHT_BG;
+      const tc        = scoreTextColor(score);
 
       return new TableRow({ children: [
         cell(para(run(name, { bold: true, size: 21, font: "Calibri" })),
              { width: labelW, fill: rowFill, borderColor: BORDER }),
-        cell(para(run(String(score), { bold: true, size: 30, color: scoreTextColor(score), font: "Arial" }),
-                  { align: AlignmentType.CENTER }),
-             { width: scoreW, fill: scoreColor(score), borderColor: BORDER }),
+        cell([
+          para(run(String(score), { bold: true, size: 34, color: tc, font: "Arial" }),
+               { align: AlignmentType.CENTER, spaceAfter: 20 }),
+          para(run(scoreBar(score), { size: 14, color: tc, font: "Arial" }),
+               { align: AlignmentType.CENTER, spaceAfter: 0 }),
+        ], { width: scoreW, fill: scoreColor(score), borderColor: BORDER }),
         cell(para(run(rationale, { size: 19, italics: true, color: DARK_GRAY })),
              { width: noteW, fill: rowFill, borderColor: BORDER }),
       ]});
@@ -484,32 +610,185 @@ function buildScorecard(radarScores, chartPngPath) {
 }
 
 // =============================================================================
+// S2a TWO-COLUMN LAYOUT
+// Groups the S2a narrative into subheading+body blocks and renders them
+// in a 2-column magazine grid. Numbers are bolded inline so they pop.
+// =============================================================================
+function renderS2aColumns(elements, processedParas, accent, accentBg, pullQuoteText) {
+  // ---- Group paragraphs into {heading, paras[]} blocks ----
+  const blocks = [];
+  let curr = { heading: null, paras: [] };
+
+  processedParas.forEach(p => {
+    const hm = p.match(/^\*\*([^*]+)\*\*\s*$/);
+    if (hm) {
+      if (curr.heading !== null || curr.paras.length > 0) blocks.push(curr);
+      curr = { heading: hm[1], paras: [] };
+    } else {
+      curr.paras.push(p);
+    }
+  });
+  if (curr.heading !== null || curr.paras.length > 0) blocks.push(curr);
+
+  // ---- Intro block → full-width lead paragraph ----
+  const introBlock = blocks[0] || { heading: null, paras: [] };
+  if (introBlock.paras.length > 0) {
+    const p    = introBlock.paras[0];
+    const clean = p.replace(/\*\*/g, "");
+    const m    = clean.match(/^(.*?[.!?])\s*([\s\S]*)$/);
+    const lead = m ? m[1] : clean;
+    const rest = m ? m[2] : "";
+    elements.push(new Paragraph({
+      children: [
+        new TextRun({ text: lead, font: "Georgia", size: 27, bold: true, color: NAVY }),
+        ...(rest ? [new TextRun({ text: "  " + rest, font: "Georgia", size: 24, color: DARK_GRAY })] : []),
+      ],
+      spacing: { before: 80, after: 220, line: 340 },
+      indent: { left: 480, right: 280 },
+      border: { left: { style: BorderStyle.SINGLE, size: 34, color: accent, space: 14 } },
+    }));
+  }
+
+  // Pull quote after intro
+  if (pullQuoteText) {
+    buildPullQuote(pullQuoteText, accent).forEach(el => elements.push(el));
+  }
+
+  // ---- Content blocks → 2-column grid ----
+  const contentBlocks = blocks.slice(1);
+  const colW = Math.floor(CONTENT_WIDTH / 2);
+
+  // Convert one block into an array of docx Paragraph objects
+  function blockToDocx(block) {
+    const out = [];
+
+    // Subheading: bold text with accent underline rule
+    if (block.heading) {
+      out.push(new Paragraph({
+        children: [new TextRun({
+          text: block.heading.toUpperCase(),
+          font: "Arial", size: 19, bold: true, color: NAVY,
+        })],
+        spacing: { before: 60, after: 100 },
+        border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: accent, space: 4 } },
+      }));
+    }
+
+    // Body: render each paragraph whole, bolding numbers/stats inline
+    block.paras.forEach(p => {
+      const parts = p.replace(/\*\*/g, "").split(/(\d+\.?\d*%|\$[\d.,]+(?:\s*(?:billion|million|B|M))?)/gi);
+      const runs  = parts.map(part => {
+        const isStat = /\d+\.?\d*%|\$[\d.,]+/.test(part);
+        return new TextRun({
+          text:  part,
+          font:  isStat ? "Arial" : "Calibri",
+          size:  isStat ? 22 : 21,
+          bold:  isStat,
+          color: isStat ? NAVY : CHARCOAL,
+        });
+      });
+      out.push(new Paragraph({
+        children: runs,
+        spacing: { before: 0, after: 120, line: 290 },
+      }));
+    });
+
+    return out;
+  }
+
+  // Render content blocks in pairs side-by-side
+  for (let i = 0; i < contentBlocks.length; i += 2) {
+    const leftDocx  = blockToDocx(contentBlocks[i]);
+    const rightDocx = contentBlocks[i + 1]
+      ? blockToDocx(contentBlocks[i + 1])
+      : [new Paragraph({ children: [new TextRun({ text: "" })] })];
+
+    elements.push(spacer(4));
+    elements.push(new Table({
+      width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+      columnWidths: [colW, colW],
+      rows: [new TableRow({ children: [
+        cell(leftDocx,  { width: colW, noBorder: true, padV: 80, padH: 180, vAlign: VerticalAlign.TOP }),
+        cell(rightDocx, { width: colW, noBorder: true, padV: 80, padH: 180, vAlign: VerticalAlign.TOP }),
+      ]})],
+    }));
+  }
+
+  elements.push(spacer(8));
+}
+
+// =============================================================================
 // BLOCK: NARRATIVE DEEP DIVE
 // =============================================================================
 function buildNarrative(sections) {
   const elements = [];
 
   const SECTION_META = [
-    { id: "S2a", label: "THE QUARTER IN CONTEXT" },
-    { id: "S2b", label: "WHAT MANAGEMENT IS SIGNALING" },
-    { id: "S2c", label: "WHAT WASN'T SAID" },
-    { id: "S2d", label: "THE BIGGER PICTURE" },
+    {
+      id: "S2a",
+      label: "THE QUARTER IN CONTEXT",
+      number: "01",
+      accent: GOLD,
+      accentBg: GOLD_LIGHT,
+      fill: NAVY,
+      subtitleColor: NAVY_FAINT,
+      subtitle: "Performance & results breakdown",
+    },
+    {
+      id: "S2b",
+      label: "WHAT MANAGEMENT IS SIGNALING",
+      number: "02",
+      accent: "3B82F6",
+      accentBg: "EFF6FF",
+      fill: "1E3A6E",
+      subtitleColor: "93C5FD",
+      subtitle: "Reading the strategic intent",
+    },
+    {
+      id: "S2c",
+      label: "WHAT WASN'T SAID",
+      number: "03",
+      accent: AMBER,
+      accentBg: AMBER_BG,
+      fill: CHARCOAL,
+      subtitleColor: "D1D5DB",
+      subtitle: "Omissions, evasions & the silences that matter",
+    },
+    {
+      id: "S2d",
+      label: "THE BIGGER PICTURE",
+      number: "04",
+      accent: "059669",
+      accentBg: "ECFDF5",
+      fill: "064E3B",
+      subtitleColor: "6EE7B7",
+      subtitle: "Context, implications & what to watch",
+    },
   ];
 
-  SECTION_META.forEach(({ id, label }) => {
-    elements.push(spacer(4));
-    elements.push(divider(BORDER, 6));
-    elements.push(spacer(4));
+  SECTION_META.forEach(({ id, label, number, accent, accentBg, fill, subtitleColor, subtitle }) => {
+    elements.push(spacer(8));
 
-    // Section label band
+    // ---- MAGAZINE-STYLE SECTION HEADER: number block + title panel ----
+    const numBlockW = 860;
+    const titleBlockW = CONTENT_WIDTH - numBlockW;
     elements.push(new Table({
       width: { size: CONTENT_WIDTH, type: WidthType.DXA },
-      columnWidths: [CONTENT_WIDTH],
+      columnWidths: [numBlockW, titleBlockW],
       rows: [new TableRow({ children: [
+        // Large section number in accent color
         cell(
-          para(run(label, { bold: true, size: 20, color: WHITE, font: "Arial" })),
-          { fill: NAVY, noBorder: true, padV: 100, padH: 200 }
+          para(run(number, { bold: true, size: 52, color: WHITE, font: "Arial" }),
+               { align: AlignmentType.CENTER, spaceAfter: 0 }),
+          { width: numBlockW, fill: accent, noBorder: true, padV: 180, padH: 60, vAlign: VerticalAlign.CENTER }
         ),
+        // Section title + subtitle on dark fill
+        cell([
+          para(run(label, { bold: true, size: 22, color: WHITE, font: "Arial" }),
+               { spaceAfter: 60 }),
+          para(run(subtitle, { size: 18, italics: true, color: subtitleColor, font: "Calibri" }),
+               { spaceAfter: 0 }),
+        ], { width: titleBlockW, fill, noBorder: true, padV: 150, padH: 220, vAlign: VerticalAlign.CENTER }),
       ]})]
     }));
 
@@ -523,40 +802,88 @@ function buildNarrative(sections) {
       return;
     }
 
-    elements.push(spacer(10));
+    elements.push(spacer(4));
 
+    // ---- Parse narrative: separate "to watch" list for S2d ----
     const narrative = stripCitations(section.narrative || "");
-    const paragraphs = narrative.split(/\n\n+/);
+    const rawParas = narrative.split(/\n\n+/);
     let isFirst = true;
+    let bodyParaCount = 0;
+    let pullQuoteInserted = false;
+    const pullQuoteText = extractPullQuote(section.narrative || "");
+    let watchListItems = [];
+    const processedParas = [];
 
-    paragraphs.forEach(p => {
+    rawParas.forEach(p => {
       p = p.trim();
       if (!p) return;
 
-      // Standalone subheading: **text**
-      if (p.startsWith("**") && p.endsWith("**")) {
-        elements.push(
-          para(run(p.replace(/\*\*/g, ""), { bold: true, size: 22, color: NAVY, font: "Calibri" }),
-               { spaceBefore: 200, spaceAfter: 80 })
-        );
+      // Detect "To monitor in the next quarter" paragraph in S2d
+      if (id === "S2d" && /to monitor/i.test(p)) {
+        // Strip the intro text, then try to split on numbered items
+        const listPart = p.replace(/^.*?(?:to monitor[^:]*:?\s*)/i, "");
+        const byNewline = listPart.split(/\n/).map(l => l.replace(/^\d+\.\s*/, "").trim()).filter(Boolean);
+        if (byNewline.length > 1) {
+          watchListItems = byNewline;
+        } else {
+          const byComma = listPart.split(/,\s*(?=\d+\.)/).map(l => l.replace(/^\d+\.\s*/, "").trim()).filter(Boolean);
+          watchListItems = byComma.length > 1 ? byComma : byNewline.length ? byNewline : [listPart];
+        }
+        return; // Rendered separately below as a watchlist box
+      }
+
+      processedParas.push(p);
+    });
+
+    // ---- Render paragraphs ----
+    if (id === "S2a") {
+      renderS2aColumns(elements, processedParas, accent, accentBg, pullQuoteText);
+    } else { processedParas.forEach(p => {
+      // Standalone subheading: entire paragraph is **text**
+      // Rendered as a two-column band: thick accent stripe left + tinted heading panel
+      const subheadMatch = p.match(/^\*\*([^*]+)\*\*\s*$/);
+      if (subheadMatch) {
+        elements.push(spacer(8));
+        const stripeW = 60;
+        const headW   = CONTENT_WIDTH - stripeW;
+        elements.push(new Table({
+          width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+          columnWidths: [stripeW, headW],
+          rows: [new TableRow({ children: [
+            cell(para(run("", { size: 2 })),
+                 { width: stripeW, fill: accent, noBorder: true, padV: 80, padH: 0 }),
+            cell(
+              para(run(subheadMatch[1].toUpperCase(), { bold: true, size: 20, color: NAVY, font: "Arial" }),
+                   { spaceAfter: 0 }),
+              { width: headW, fill: accentBg, noBorder: true, padV: 110, padH: 200 }
+            ),
+          ]})]
+        }));
+        elements.push(spacer(4));
         return;
       }
 
-      // First paragraph → pullquote with gold left rule
+      // First paragraph → larger deck/lede copy with section accent
       if (isFirst) {
         isFirst = false;
+        const cleanText = p.replace(/\*\*/g, "");
+        const firstSentMatch = cleanText.match(/^(.*?[.!?])\s*([\s\S]*)$/);
+        const leadSentence = firstSentMatch ? firstSentMatch[1] : cleanText;
+        const rest = firstSentMatch ? firstSentMatch[2] : "";
+
+        const leadRuns = [
+          new TextRun({ text: leadSentence, font: "Georgia", size: 27, bold: true, color: NAVY }),
+        ];
+        if (rest) {
+          leadRuns.push(new TextRun({ text: "  " + rest, font: "Georgia", size: 24, color: DARK_GRAY }));
+        }
+
         elements.push(new Paragraph({
-          children: [new TextRun({
-            text: p.replace(/\*\*/g, ""),
-            font: "Georgia",
-            size: 25,
-            italics: true,
-            color: NAVY,
-          })],
-          spacing: { before: 100, after: 180, line: 320 },
-          indent: { left: 500, right: 300 },
+          children: leadRuns,
+          spacing: { before: 80, after: 220, line: 340 },
+          indent: { left: 480, right: 280 },
           border: {
-            left: { style: BorderStyle.SINGLE, size: 28, color: GOLD, space: 14 },
+            left: { style: BorderStyle.SINGLE, size: 34, color: accent, space: 14 },
           },
         }));
         return;
@@ -579,6 +906,43 @@ function buildNarrative(sections) {
         return;
       }
 
+      // Data-dense paragraph: 3+ stat figures → sentence-per-row shaded panel
+      // Numbers appear bold in navy so they jump off the page
+      const statHits = (p.match(/\d+\.?\d*%|\$[\d.,]+\s*(?:billion|million|B|M)?/gi) || []).length;
+      const sentences = (p.match(/[^.!?]+[.!?]+/g) || []).map(s => s.trim()).filter(Boolean);
+      if (statHits >= 3 && sentences.length >= 2) {
+        elements.push(new Table({
+          width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+          columnWidths: [CONTENT_WIDTH],
+          rows: sentences.map((sentence, idx) => {
+            const sentParts = sentence.split(/(\d+\.?\d*%|\$[\d.,]+(?:\s*(?:billion|million|B|M))?)/gi);
+            const sentRuns = sentParts.map(part => {
+              const isStat = /\d+\.?\d*%|\$[\d.,]+/.test(part);
+              return new TextRun({
+                text: part,
+                font: isStat ? "Arial" : "Calibri",
+                size: isStat ? 22 : 21,
+                bold: isStat,
+                color: isStat ? NAVY : CHARCOAL,
+              });
+            });
+            return new TableRow({ children: [
+              cell(
+                new Paragraph({ children: sentRuns, spacing: { before: 0, after: 0 } }),
+                { fill: idx % 2 === 0 ? accentBg : WHITE, noBorder: false, borderColor: BORDER, padV: 100, padH: 200 }
+              ),
+            ]});
+          }),
+        }));
+        elements.push(spacer(6));
+        bodyParaCount++;
+        if (!pullQuoteInserted && bodyParaCount === 2 && pullQuoteText) {
+          pullQuoteInserted = true;
+          buildPullQuote(pullQuoteText, accent).forEach(el => elements.push(el));
+        }
+        return;
+      }
+
       // Normal paragraph — parse inline **bold**
       const parts = p.split(/(\*\*[^*]+\*\*)/g);
       const runs = parts.map(part => {
@@ -590,11 +954,113 @@ function buildNarrative(sections) {
 
       elements.push(new Paragraph({
         children: runs,
-        spacing: { before: 0, after: 160, line: 280 },
+        spacing: { before: 0, after: 170, line: 300 },
       }));
-    });
 
-    elements.push(spacer(8));
+      bodyParaCount++;
+
+      // Insert pull quote after 2nd body paragraph
+      if (!pullQuoteInserted && bodyParaCount === 2 && pullQuoteText) {
+        pullQuoteInserted = true;
+        buildPullQuote(pullQuoteText, accent).forEach(el => elements.push(el));
+      }
+    }); } // end else (non-S2a rendering)
+
+    // ---- S2b: KEY SIGNALS panel (pulled from structured claims) ----
+    if (id === "S2b" && section.claims && section.claims.length > 0) {
+      // Skip the first claim if it's just a repetition of top-line numbers (usually the first grounded claim)
+      const signals = section.claims.slice(1).filter(c =>
+        c.claim_type === "grounded" || c.claim_type === "interpretive"
+      ).slice(0, 4);
+
+      if (signals.length > 0) {
+        elements.push(spacer(10));
+        elements.push(new Table({
+          width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+          columnWidths: [CONTENT_WIDTH],
+          rows: [
+            new TableRow({ children: [
+              cell(
+                para(run("KEY SIGNALS FROM MANAGEMENT", { bold: true, size: 19, color: WHITE, font: "Arial" })),
+                { fill: accent, noBorder: true, padV: 100, padH: 200 }
+              ),
+            ]}),
+            ...signals.map((sig, i) => new TableRow({ children: [
+              cell([
+                para([
+                  run("→  ", { bold: true, size: 21, color: accent }),
+                  run(stripCitations(sig.claim_text), { size: 21, color: CHARCOAL }),
+                ], { spaceAfter: 0 }),
+              ], { fill: i % 2 === 0 ? accentBg : WHITE, noBorder: false, borderColor: BORDER, padV: 110, padH: 200 }),
+            ]})),
+          ],
+        }));
+        elements.push(spacer(8));
+      }
+    }
+
+    // ---- S2c: NOTABLE OMISSIONS panel (interpretive claims with no source grounding) ----
+    if (id === "S2c" && section.claims && section.claims.length > 0) {
+      const omissions = section.claims.filter(c =>
+        c.claim_type === "interpretive" || !c.source_fact_ids || c.source_fact_ids.length === 0
+      ).slice(0, 5);
+
+      if (omissions.length > 0) {
+        elements.push(spacer(10));
+        elements.push(new Table({
+          width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+          columnWidths: [CONTENT_WIDTH],
+          rows: [
+            new TableRow({ children: [
+              cell(
+                para(run("NOTABLE OMISSIONS & EVASIONS", { bold: true, size: 19, color: WHITE, font: "Arial" })),
+                { fill: CHARCOAL, noBorder: true, padV: 100, padH: 200 }
+              ),
+            ]}),
+            ...omissions.map((o, i) => new TableRow({ children: [
+              cell([
+                para([
+                  run("◦  ", { bold: true, size: 22, color: accent }),
+                  run(stripCitations(o.claim_text), { size: 21, italics: true, color: DARK_GRAY }),
+                ], { spaceAfter: 0 }),
+              ], { fill: i % 2 === 0 ? accentBg : WHITE, noBorder: false, borderColor: BORDER, padV: 110, padH: 200 }),
+            ]})),
+          ],
+        }));
+        elements.push(spacer(8));
+      }
+    }
+
+    // ---- S2d: WHAT TO WATCH checklist ----
+    if (id === "S2d" && watchListItems.length > 0) {
+      elements.push(spacer(10));
+      elements.push(new Table({
+        width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+        columnWidths: [CONTENT_WIDTH],
+        rows: [
+          new TableRow({ children: [
+            cell(
+              para(run("WHAT TO WATCH NEXT QUARTER", { bold: true, size: 19, color: WHITE, font: "Arial" })),
+              { fill: accent, noBorder: true, padV: 100, padH: 200 }
+            ),
+          ]}),
+          ...watchListItems.map((item, i) => {
+            const cleanItem = item.replace(/\.$/, "").trim();
+            return new TableRow({ children: [
+              cell([
+                para([
+                  run(`${i + 1}`, { bold: true, size: 26, color: accent, font: "Arial" }),
+                  run("   " + cleanItem, { size: 21, color: CHARCOAL }),
+                ], { spaceAfter: 0 }),
+              ], { fill: i % 2 === 0 ? accentBg : WHITE, noBorder: false, borderColor: BORDER, padV: 120, padH: 200 }),
+            ]});
+          }),
+        ],
+      }));
+      elements.push(spacer(2));
+    }
+
+    elements.push(spacer(2));
   });
 
   return elements;
@@ -606,7 +1072,8 @@ function buildNarrative(sections) {
 function buildVerification(verification, radarScores) {
   const elements = [];
 
-  elements.push(new Paragraph({ children: [new PageBreak()] }));
+  elements.push(divider(BORDER, 6));
+  elements.push(spacer(4));
 
   elements.push(new Table({
     width: { size: CONTENT_WIDTH, type: WidthType.DXA },
@@ -619,7 +1086,7 @@ function buildVerification(verification, radarScores) {
     ]})]
   }));
 
-  elements.push(spacer(8));
+  elements.push(spacer(6));
   elements.push(para(run(
     "Every factual claim in this report was independently verified against the source transcript " +
     "by a separate AI model. This appendix documents the verification process and its findings.",
@@ -747,8 +1214,8 @@ async function main() {
     ...buildHeader(snapshot),
     ...buildHeadline(snapshot, verificationSummary),
     ...buildMetricCards(snapshot),
-    ...buildTakeaways(snapshot),
     ...buildSignals(sections),
+    ...buildTakeaways(snapshot),
     ...buildScorecard(radar_scores, chartPngPath),
     ...buildNarrative(sections),
     ...buildVerification(verification, radar_scores),

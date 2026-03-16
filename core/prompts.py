@@ -762,6 +762,12 @@ FOR EACH DIMENSION, YOU MUST PROVIDE:
 - The specific fact_ids that justify the score
 - A 1-2 sentence rationale explaining the score
 
+CRITICAL: scoring_rationale must NEVER be empty. Every dimension requires a rationale,
+even if the evidence is thin. If you found little evidence for a dimension, say so explicitly —
+e.g. "Limited direct evidence for this dimension; score reflects the absence of any material
+disclosures suggesting problems, combined with the [specific data point] which implies [X]."
+A blank rationale is a pipeline error.
+
 OUTPUT FORMAT:
 Respond with ONLY a JSON object. No preamble, no explanation, no markdown code fences.
 
