@@ -210,23 +210,46 @@ Produce four structured outputs:
    - Company name, ticker symbol, quarter (e.g. "Q2 FY2026"), sector
 
 2. HEADLINE
-   - One sentence summarizing the quarter's defining tension or story
-   - Must be grounded in facts from the FactList (cite fact_ids)
-   - Quality standard: Financial Times headline — authoritative, specific, no fluff
+   Write a single sentence that HOOKS the reader — the defining story of this quarter.
+   Think Financial Times front page, not press release.
+
+   RULES:
+   - Reveal the tension, the turn, or the surprise — not just what happened, but what it MEANS
+   - Use strong, specific verbs. Name the stakes.
+   - Do NOT recite a list of numbers. Pick the ONE most significant fact and build around it.
+   - Do NOT include fact IDs (like [F001]) in the headline text — those go in source_fact_ids only
+   - Do NOT use corporate language: "outperform", "leverage", "execute on strategy"
+
+   BAD: "Company reported Q3 revenue of $5B, up 10% YoY, beating estimates by 2%."
+   GOOD: "X bets its future on cloud as core software revenue falls for the first time in a decade."
+
+   BAD: "McDonald's delivered strong Q4 results with 5.7% global comp sales growth."
+   GOOD: "Customers are coming back to McDonald's — and for the first time in years, it's because they want to, not because it's the cheapest option."
 
 3. KEY FINANCIALS TABLE
    For each major financial metric reported, provide:
-   - metric_name: the metric (Revenue, Net Income, EPS, Operating Margin, Free Cash Flow, etc.)
+   - metric_name: keep short — max 35 characters (abbreviate if needed)
    - reported_value: exact figure as stated
    - yoy_change: year-over-year change if mentioned (e.g. "+16%")
-   - vs_estimate: beat/miss/in-line vs. analyst consensus if mentioned
+   - vs_estimate: beat/miss/in-line vs. analyst consensus if mentioned (null if not mentioned)
    - source_fact_ids: the fact_id(s) this came from
 
 4. THREE KEY TAKEAWAYS
-   - Exactly 3 takeaways, numbered 1-3
-   - Each should capture a distinct, significant story from the quarter
-   - Each must cite source_fact_ids
-   - Quality standard: punchy, specific, analytical — not generic summaries
+   Each takeaway must tell a DIFFERENT story and speak to a retail investor or journalist
+   who has 30 seconds. What do they NEED to understand about this quarter?
+
+   RULES for each takeaway:
+   - 2-3 sentences max. Lead with the insight, then support it with the specific number.
+   - The FIRST sentence must be the punchy insight — bold and declarative.
+   - Do NOT include fact IDs (like [F001, F002]) in the text — those go in source_fact_ids only
+   - Do NOT use corporate speak: "outperform", "synergies", "execute", "robust demand"
+   - Cover 3 DISTINCT stories — don't repeat the same theme
+
+   BAD: "McDonald's achieved global comp sales growth of 5.7% in Q4 2025, driven by positive guest counts."
+   GOOD: "Customers are back — and not just for value. For the first time in several quarters, guest counts are up even as McDonald's holds prices steady, suggesting the brand's pull is stronger than the discount."
+
+   BAD: "The company is accelerating growth with plans to open 2,600 restaurants in 2026."
+   GOOD: "McDonald's is opening restaurants faster than at any point in recent memory. The plan: 2,600 new locations in 2026, up from 2,275 last year — a bet that the brand's momentum can be franchised globally at scale."
 
 OUTPUT FORMAT:
 Respond with ONLY a JSON object. No preamble, no explanation, no markdown code fences.
@@ -236,7 +259,7 @@ Respond with ONLY a JSON object. No preamble, no explanation, no markdown code f
   "ticker": "MSFT (NASDAQ)",
   "quarter": "Q2 FY2026",
   "sector": "Technology",
-  "headline": "One sentence capturing the quarter's defining story.",
+  "headline": "One hook sentence that captures the quarter's defining story — no fact IDs.",
   "key_financials": [
     {{
       "metric_name": "Revenue",
@@ -249,7 +272,7 @@ Respond with ONLY a JSON object. No preamble, no explanation, no markdown code f
   "key_takeaways": [
     {{
       "number": 1,
-      "text": "The takeaway sentence.",
+      "text": "Bold insight first. Then the specific data that backs it up, in plain English.",
       "source_fact_ids": ["F005", "F006"]
     }}
   ]
@@ -292,6 +315,11 @@ YOUR SECTION MUST COVER:
 2. The Margin Story — operating margin direction, CapEx trajectory, what's compressing margins
 3. Earnings Quality Assessment — how much of growth is recurring vs. one-time? Any caveats?
 4. The Macro Backdrop — what does management say about the broader environment?
+
+WRITING STYLE:
+- Write for a sophisticated reader who is NOT a financial professional — clear, specific, human
+- Do NOT embed fact IDs (like F001 or [F001]) inside the narrative text. They belong in the claims array only.
+- Use strong verbs, concrete numbers, and named people. Avoid hedge-everything language.
 
 CLAIM RULES (critical — every claim must follow these):
 - Every factual claim must cite the fact_id(s) that support it
@@ -745,13 +773,13 @@ the orchestrator will populate those fields after running both models independen
   "dimension_scores": [
     {{
       "dimension": "revenue_momentum",
-      "score_model_a": 8,
+      "score_model_a": 7,
       "score_model_b": 0,
-      "published_score": 8,
+      "published_score": 7,
       "models_agreed": true,
       "disagreement_note": null,
       "supporting_fact_ids": ["F001", "F003"],
-      "scoring_rationale": "Revenue grew 16% YoY and beat consensus by 2.1%, with Azure accelerating to 38%."
+      "scoring_rationale": "Write 1-2 sentences citing ONLY data from the actual FactList and sections above — specific figures, not generic statements."
     }}
   ],
   "scoring_model_a": "model-id-here",
