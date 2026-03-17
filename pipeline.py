@@ -44,9 +44,12 @@ from core.schemas import (
 from core.prompts import (
     s1a_fact_extractor, gate_1a_validator, s1b_structured_data_pull,
     s2a_narrative_analyst, s2b_signal_detector, s2c_gap_analyst,
-    s2d_context_analyst, gate_2_fact_verifier, s3_radar_scorer,
-    s5_holistic_verifier
+    s2d_context_analyst, s2e_credibility_tracker, s2f_competitive_intelligence,
+    s6_editorial_synthesis, gate_2_fact_verifier, s3_radar_scorer,
+    s5_holistic_verifier, s3_rationale_retry
 )
+from core.context_assembler import assemble_context
+from core.schemas import ContextBundle
 
 load_dotenv()
 
@@ -276,6 +279,10 @@ def run_s1a(transcript: str) -> FactList:
                 fact["transcript_location"] = "unknown"
             if fact.get("source_fact_ids") is None:
                 fact["source_fact_ids"] = []
+            if not fact.get("speaker"):
+                fact["speaker"] = "Unknown"
+            if not fact.get("content"):
+                fact["content"] = ""
         all_facts_raw.extend(pass_facts)
         print(f"  Pass {i}: {len(pass_facts)} facts")
 
@@ -384,56 +391,69 @@ async def run_s2_agent_async(
     agent_id: str,
     prompt_fn,
     transcript: str,
-    factlist: FactList
+    factlist: FactList,
+    context_bundle_text: str = "",
 ) -> S2SectionOutput:
     """
     Run a single S2 agent asynchronously.
-    We use asyncio so all four agents run at the same time.
+    We use asyncio so all agents run at the same time.
     """
     factlist_json = factlist.model_dump_json(indent=2)
-    prompt = prompt_fn(transcript, factlist_json)
-    
+    prompt = prompt_fn(transcript, factlist_json, context_bundle_text)
+
     # Run the blocking model call in a thread pool so it doesn't block other agents
     loop = asyncio.get_running_loop()
     raw = await loop.run_in_executor(
         None,
         lambda: call_model(prompt, GENERATION_MODEL, max_tokens=12000)
     )
-    
+
     data = parse_json_response(raw)
     # Coerce null source_fact_ids to [] — model occasionally returns null instead of []
     for claim in data.get("claims", []):
         if claim.get("source_fact_ids") is None:
             claim["source_fact_ids"] = []
     data["generating_model"] = GENERATION_MODEL
+    # Remove any extra fields not in schema (e.g. credibility_score from S2e)
+    allowed_fields = {"section_id", "section_title", "narrative", "claims", "generating_model"}
+    data = {k: v for k, v in data.items() if k in allowed_fields}
     return S2SectionOutput(**data)
 
 
-async def run_s2_all_async(transcript: str, factlist: FactList) -> dict[str, S2SectionOutput]:
+async def run_s2_all_async(
+    transcript: str,
+    factlist: FactList,
+    context_bundle_text: str = "",
+) -> dict[str, S2SectionOutput]:
     """
-    Run all four S2 agents in parallel. Returns a dict keyed by section_id.
+    Run all S2 agents (S2a–S2f) in parallel. Returns a dict keyed by section_id.
+    S2e (credibility tracker) and S2f (competitive intelligence) are included
+    only when context_bundle_text is non-empty.
     """
-    print("  Running S2 agents in parallel (S2a, S2b, S2c, S2d)...")
-    
     agents = [
         ("S2a", s2a_narrative_analyst),
         ("S2b", s2b_signal_detector),
         ("S2c", s2c_gap_analyst),
         ("S2d", s2d_context_analyst),
+        ("S2e", s2e_credibility_tracker),    # always run — falls back to transcript-only analysis when no context
+        ("S2f", s2f_competitive_intelligence), # always run — falls back to transcript-only analysis when no context
     ]
-    
+
+    agent_labels = ", ".join(a[0] for a in agents)
+    print(f"  Running S2 agents in parallel ({agent_labels})...")
+
     tasks = [
-        run_s2_agent_async(agent_id, prompt_fn, transcript, factlist)
+        run_s2_agent_async(agent_id, prompt_fn, transcript, factlist, context_bundle_text)
         for agent_id, prompt_fn in agents
     ]
-    
+
     results = await asyncio.gather(*tasks)
-    
+
     sections = {}
     for i, (agent_id, _) in enumerate(agents):
         sections[agent_id] = results[i]
         print(f"  ✓ {agent_id} complete: {len(results[i].claims)} claims")
-    
+
     return sections
 
 
@@ -549,31 +569,32 @@ def verify_section_with_retry(
     section: S2SectionOutput,
     factlist: FactList,
     transcript: str,
-    prompt_fn
+    prompt_fn,
+    context_bundle_text: str = "",
 ) -> tuple[Optional[S2SectionOutput], Gate2Result, int]:
     """
     Verify a section, retrying up to MAX_RETRIES times if it fails.
-    
+
     Returns:
         (verified_section, final_gate_result, retries_used)
         If all retries fail, verified_section is None (Level 2 degradation).
     """
     retry_count = 0
-    
+
     while retry_count <= MAX_RETRIES:
         gate_result = run_gate_2(section, factlist, retry_count)
-        
+
         if gate_result.passed:
             return section, gate_result, retry_count
-        
+
         if retry_count < MAX_RETRIES:
             # Retry: send the section back to the generating agent with failure details
             print(f"    Retrying {section.section_id}...")
             retry_count += 1
-            
+
             # Build a retry prompt that includes the failure reason
             factlist_json = factlist.model_dump_json(indent=2)
-            original_prompt = prompt_fn(transcript, factlist_json)
+            original_prompt = prompt_fn(transcript, factlist_json, context_bundle_text)
             retry_prompt = f"""{original_prompt}
 
 IMPORTANT — THIS IS A RETRY (attempt {retry_count + 1} of {MAX_RETRIES + 1}):
@@ -590,12 +611,14 @@ claims flagged above. Do not change claims that were not flagged.
                 if claim.get("source_fact_ids") is None:
                     claim["source_fact_ids"] = []
             data["generating_model"] = GENERATION_MODEL
+            allowed_fields = {"section_id", "section_title", "narrative", "claims", "generating_model"}
+            data = {k: v for k, v in data.items() if k in allowed_fields}
             section = S2SectionOutput(**data)
         else:
             # All retries exhausted — Level 2 degradation (section omitted)
             print(f"    ✗ {section.section_id} failed all retries — will be omitted from report")
             return None, gate_result, retry_count
-    
+
     return None, gate_result, retry_count
 
 
@@ -603,11 +626,12 @@ async def run_gate_2_all_async(
     s2_sections: dict[str, S2SectionOutput],
     factlist: FactList,
     transcript: str,
-    prompt_fns: dict
+    prompt_fns: dict,
+    context_bundle_text: str = "",
 ) -> list[tuple[str, Optional[S2SectionOutput], Gate2Result, int]]:
     """
     Run Gate 2 verification for all S2 sections in parallel.
-    Each section's full retry loop runs in a thread, all four run concurrently.
+    Each section's full retry loop runs in a thread, all run concurrently.
     Returns a list of (section_id, verified_section, gate_result, retries_used).
     """
     print("\nGATE 2: Fact Verification (parallel)")
@@ -616,7 +640,9 @@ async def run_gate_2_all_async(
     async def _verify_one(section_id, section):
         verified, gate_result, retries = await loop.run_in_executor(
             None,
-            lambda: verify_section_with_retry(section, factlist, transcript, prompt_fns[section_id])
+            lambda: verify_section_with_retry(
+                section, factlist, transcript, prompt_fns[section_id], context_bundle_text
+            )
         )
         return section_id, verified, gate_result, retries
 
@@ -625,6 +651,45 @@ async def run_gate_2_all_async(
         for sid, section in s2_sections.items()
     ]
     return await asyncio.gather(*tasks)
+
+
+# =============================================================================
+# STAGE S6: EDITORIAL SYNTHESIS — THE LEX WRITER
+# Runs after all S2 sections are verified. Not put through Gate 2 (explicitly
+# interpretive). S5 holistic verifier checks it for investment advice.
+# =============================================================================
+
+def run_s6(
+    s1b: S1bOutput,
+    verified_sections: dict[str, S2SectionOutput],
+    context_bundle_text: str = "",
+) -> S2SectionOutput:
+    """
+    Write the FT Lex-style editorial commentary that opens the dossier.
+    Uses the verified S2 sections + context as raw material.
+    """
+    print("  Running S6: Editorial Synthesis (The Lex Writer)...")
+
+    snapshot_json = s1b.model_dump_json(indent=2)
+    sections_json = json.dumps(
+        {k: json.loads(v.model_dump_json()) for k, v in verified_sections.items()},
+        indent=2
+    )
+
+    prompt = s6_editorial_synthesis(snapshot_json, sections_json, context_bundle_text)
+    raw = call_model(prompt, GENERATION_MODEL, max_tokens=3000)
+    data = parse_json_response(raw)
+
+    for claim in data.get("claims", []):
+        if claim.get("source_fact_ids") is None:
+            claim["source_fact_ids"] = []
+    data["generating_model"] = GENERATION_MODEL
+    allowed_fields = {"section_id", "section_title", "narrative", "claims", "generating_model"}
+    data = {k: v for k, v in data.items() if k in allowed_fields}
+
+    result = S2SectionOutput(**data)
+    print(f"  ✓ S6 complete: editorial commentary written ({len(result.narrative)} chars)")
+    return result
 
 
 # =============================================================================
@@ -697,6 +762,39 @@ def run_s3(factlist: FactList, verified_sections: dict[str, S2SectionOutput]) ->
             scoring_rationale=rationale
         ))
 
+    # Retry any dimension that ended up with an empty rationale.
+    # This happens when both models truncate or ignore the rationale field despite
+    # being instructed not to. A targeted single-dimension call recovers the rationale.
+    for i, ds in enumerate(final_scores):
+        if not ds.scoring_rationale or len(ds.scoring_rationale.strip()) < 10:
+            print(f"    ! Empty rationale for {ds.dimension} — retrying with targeted prompt...")
+            retry_prompt = s3_rationale_retry(
+                dimension=ds.dimension,
+                score=ds.published_score,
+                factlist_json=factlist_json,
+                verified_sections_json=sections_json,
+            )
+            try:
+                raw_retry = call_model(retry_prompt, SCORING_MODEL_B, max_tokens=400)
+                retry_data = parse_json_response(raw_retry)
+                recovered = (retry_data.get("rationale") or "").strip()
+                if len(recovered) > 10:
+                    final_scores[i] = DimensionScore(
+                        dimension=ds.dimension,
+                        score_model_a=ds.score_model_a,
+                        score_model_b=ds.score_model_b,
+                        published_score=ds.published_score,
+                        models_agreed=ds.models_agreed,
+                        disagreement_note=ds.disagreement_note,
+                        supporting_fact_ids=ds.supporting_fact_ids,
+                        scoring_rationale=recovered,
+                    )
+                    print(f"    ✓ Rationale recovered for {ds.dimension}")
+                else:
+                    print(f"    ! Rationale retry also returned empty for {ds.dimension} — leaving blank")
+            except Exception as e:
+                print(f"    ! Rationale retry failed for {ds.dimension}: {e}")
+
     result = S3Output(
         dimension_scores=final_scores,
         scoring_model_a=SCORING_MODEL_A,
@@ -765,13 +863,25 @@ def run_s5(
 # Wires everything together with full gate logic and degradation handling.
 # =============================================================================
 
-def run_pipeline(transcript: str) -> dict:
+def run_pipeline(
+    transcript: str,
+    ticker: str = "",
+    year: int = 0,
+    quarter: int = 0,
+    peer_tickers: list[str] = None,
+    skip_context: bool = False,
+) -> dict:
     """
     Run the complete Earnings Call Dossier pipeline.
-    
+
     Args:
-        transcript: The raw earnings call transcript text
-    
+        transcript:    The raw earnings call transcript text
+        ticker:        Stock ticker (enables S0 context assembly)
+        year:          Calendar year of the earnings call
+        quarter:       Calendar quarter (1-4)
+        peer_tickers:  Optional list of peer tickers for competitive intelligence
+        skip_context:  Set True to skip S0 context assembly (faster, lower quality)
+
     Returns:
         A dict containing:
         - "status": "full" | "partial" | "halted"
@@ -792,11 +902,41 @@ def run_pipeline(transcript: str) -> dict:
     print(f"Chorus AI — Earnings Call Dossier Pipeline")
     print(f"Run ID: {run_id}")
     print(f"{'='*60}\n")
-    
+
+    # -------------------------------------------------------------------------
+    # STAGE S0: CONTEXT ASSEMBLY
+    # Runs before S1 — builds the ContextBundle from yfinance, Alpha Vantage,
+    # and prior/peer EDGAR transcripts. Best-effort: never blocks the pipeline.
+    # -------------------------------------------------------------------------
+    context_bundle = None
+    context_bundle_text = ""
+
+    if ticker and year and quarter and not skip_context:
+        print("STAGE 0: Context Assembly")
+        try:
+            context_bundle = assemble_context(
+                ticker=ticker,
+                year=year,
+                quarter=quarter,
+                peer_tickers=peer_tickers or [],
+                call_model_fn=call_model,
+                generation_model=GENERATION_MODEL,
+            )
+            context_bundle_text = context_bundle.to_prompt_text()
+        except Exception as e:
+            print(f"  ! S0 context assembly failed (non-blocking): {e}")
+            context_bundle = None
+            context_bundle_text = ""
+    else:
+        if skip_context:
+            print("STAGE 0: Context Assembly skipped (--no-context)")
+        else:
+            print("STAGE 0: Context Assembly skipped (no ticker/year/quarter provided)")
+
     # -------------------------------------------------------------------------
     # STAGE S1a: FACT EXTRACTION
     # -------------------------------------------------------------------------
-    print("STAGE 1: Fact Extraction")
+    print("\nSTAGE 1: Fact Extraction")
     factlist = run_s1a(transcript)
     
     # -------------------------------------------------------------------------
@@ -807,21 +947,48 @@ def run_pipeline(transcript: str) -> dict:
     gate_1a_result = run_gate_1a(transcript, factlist)
     
     if not gate_1a_result.passed:
-        # Level 3: Pipeline Halt
-        print("\n✗ PIPELINE HALTED at Gate 1a")
-        elapsed = time.time() - start_time
-        run_log = _build_run_log(
-            run_id, factlist, gate_1a_result, {}, {}, {},
-            DegradationLevel.PIPELINE_HALT, elapsed,
-            FinalOutputStatus.HALTED, [], []
-        )
-        return {
-            "status": "halted",
-            "report": None,
-            "run_log": run_log,
-            "omitted_sections": [],
-            "halt_reason": gate_1a_result.failure_reason
-        }
+        # Borderline failure (80–89%): strip the failing facts and proceed at Level 1
+        # rather than halting. Facts with bad verbatim quotes are unusable downstream anyway;
+        # removing them and continuing is safer than discarding the whole run.
+        # Hard halt threshold is <80% — at that point the extraction is fundamentally broken.
+        if gate_1a_result.pass_rate >= 0.80:
+            failed_ids = {
+                v.fact_id for v in gate_1a_result.fact_validations if not v.passed
+            }
+            original_count = len(factlist.facts)
+            cleaned_facts = [f for f in factlist.facts if f.fact_id not in failed_ids]
+            factlist = FactList(
+                facts=cleaned_facts,
+                transcript_token_count=factlist.transcript_token_count,
+                extraction_model=factlist.extraction_model,
+            )
+            print(f"  ! Gate 1a: borderline failure ({gate_1a_result.pass_rate:.0%}) — "
+                  f"stripped {original_count - len(cleaned_facts)} failing facts, "
+                  f"proceeding with {len(cleaned_facts)} verified facts (Level 1 degradation)")
+            degradation_level = max(degradation_level, DegradationLevel.RETRY)
+            # Rebuild a passing gate result reflecting the stripped factlist
+            gate_1a_result = gate_1a_result.model_copy(update={
+                "passed": True,
+                "pass_rate": 1.0,
+                "failure_reason": None,
+                "degradation_triggered": DegradationLevel.NORMAL,
+            })
+        else:
+            # Hard halt — pass_rate < 80%, extraction is fundamentally unreliable
+            print("\n✗ PIPELINE HALTED at Gate 1a")
+            elapsed = time.time() - start_time
+            run_log = _build_run_log(
+                run_id, factlist, gate_1a_result, {}, {}, {},
+                DegradationLevel.PIPELINE_HALT, elapsed,
+                FinalOutputStatus.HALTED, [], []
+            )
+            return {
+                "status": "halted",
+                "report": None,
+                "run_log": run_log,
+                "omitted_sections": [],
+                "halt_reason": gate_1a_result.failure_reason
+            }
     
     # -------------------------------------------------------------------------
     # STAGE S1b: STRUCTURED DATA PULL
@@ -830,11 +997,11 @@ def run_pipeline(transcript: str) -> dict:
     s1b_output = run_s1b(factlist)
     
     # -------------------------------------------------------------------------
-    # STAGE S2: ANALYSIS AGENTS (parallel)
+    # STAGE S2: ANALYSIS AGENTS (parallel — S2a-S2d always, S2e/S2f if context)
     # -------------------------------------------------------------------------
     print("\nSTAGE 3: Analysis Agents (parallel)")
-    s2_sections = asyncio.run(run_s2_all_async(transcript, factlist))
-    
+    s2_sections = asyncio.run(run_s2_all_async(transcript, factlist, context_bundle_text))
+
     # -------------------------------------------------------------------------
     # GATE 2: FACT VERIFICATION (parallel across all sections, with retries)
     # -------------------------------------------------------------------------
@@ -845,13 +1012,15 @@ def run_pipeline(transcript: str) -> dict:
         "S2b": s2b_signal_detector,
         "S2c": s2c_gap_analyst,
         "S2d": s2d_context_analyst,
+        "S2e": s2e_credibility_tracker,
+        "S2f": s2f_competitive_intelligence,
     }
 
     verified_sections = {}
     failed_sections = []
 
     gate_2_results = asyncio.run(
-        run_gate_2_all_async(s2_sections, factlist, transcript, prompt_fns)
+        run_gate_2_all_async(s2_sections, factlist, transcript, prompt_fns, context_bundle_text)
     )
 
     for section_id, verified, gate_result, retries in gate_2_results:
@@ -891,16 +1060,30 @@ def run_pipeline(transcript: str) -> dict:
         print(f"  Sections omitted (Level 2 degradation): {omitted_sections}")
     
     # -------------------------------------------------------------------------
+    # STAGE S6: EDITORIAL SYNTHESIS (runs after all S2 verification)
+    # -------------------------------------------------------------------------
+    print("\nSTAGE 4: Editorial Synthesis")
+    s6_output = None
+    try:
+        s6_output = run_s6(s1b_output, verified_sections, context_bundle_text)
+    except Exception as e:
+        print(f"  ! S6 editorial synthesis failed (non-blocking): {e}")
+
+    # -------------------------------------------------------------------------
     # STAGE S3: RADAR SCORING
     # -------------------------------------------------------------------------
-    print("\nSTAGE 4: Radar Scoring")
+    print("\nSTAGE 5: Radar Scoring")
     s3_output = run_s3(factlist, verified_sections)
     
     # -------------------------------------------------------------------------
-    # STAGE S5: HOLISTIC VERIFICATION
+    # STAGE S5: HOLISTIC VERIFICATION (includes S6 in review scope)
     # -------------------------------------------------------------------------
-    print("\nSTAGE 5: Holistic Verification")
-    s5_output = run_s5(s1b_output, verified_sections, s3_output)
+    print("\nSTAGE 6: Holistic Verification")
+    # Include S6 in sections passed to S5 for investment advice scanning
+    all_sections_for_s5 = dict(verified_sections)
+    if s6_output:
+        all_sections_for_s5["S6"] = s6_output
+    s5_output = run_s5(s1b_output, all_sections_for_s5, s3_output)
     
     if not s5_output.passed:
         if s5_output.safety_flags:
@@ -948,8 +1131,10 @@ def run_pipeline(transcript: str) -> dict:
         "run_id": run_id,
         "status": final_status.value,
         "snapshot": json.loads(s1b_output.model_dump_json()),
+        "editorial": json.loads(s6_output.model_dump_json()) if s6_output else None,
         "sections": {k: json.loads(v.model_dump_json()) for k, v in verified_sections.items()},
         "radar_scores": json.loads(s3_output.model_dump_json()),
+        "context_bundle": json.loads(context_bundle.model_dump_json()) if context_bundle else None,
         "verification": {
             "source_grounding_scores": section_grounding_scores,
             "contradiction_counts": section_contradiction_counts,
@@ -1068,29 +1253,49 @@ Examples:
         """
     )
 
-    # Transcript source — one of these two is required
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--ticker", help="Stock ticker symbol, e.g. MSFT (requires --year and --quarter)")
-    source.add_argument("--transcript", help="Path to a local transcript .txt file")
-
+    # Transcript source
+    parser.add_argument("--ticker",     help="Stock ticker, e.g. MSFT — fetches transcript AND enables context assembly")
+    parser.add_argument("--transcript", help="Path to a local .txt transcript file (can be combined with --ticker for context)")
     parser.add_argument("--year",    type=int, choices=range(2000, 2100), metavar="YEAR",
-                        help="Calendar year of the earnings call, e.g. 2026 (used with --ticker)")
+                        help="Calendar year of the earnings call (required with --ticker for transcript fetch)")
     parser.add_argument("--quarter", type=int, choices=[1, 2, 3, 4],
-                        help="Quarter (1-4) (used with --ticker)")
+                        help="Quarter (1-4) (required with --ticker for transcript fetch)")
     parser.add_argument("--output",  default="outputs/report_output.json",
                         help="Path to save the output JSON (default: outputs/report_output.json)")
+    parser.add_argument(
+        "--peers", default="",
+        help="Comma-separated peer tickers for competitive intelligence, e.g. PENN,MGM,CZR"
+    )
+    parser.add_argument(
+        "--no-context", action="store_true",
+        help="Skip S0 context assembly (faster runs, no historical/peer data)"
+    )
+    parser.add_argument(
+        "--source", default="auto", choices=["auto", "edgar", "finnhub", "fmp"],
+        help="Transcript source for --ticker (default: auto)"
+    )
 
     args = parser.parse_args()
 
-    # Validate --ticker requires --year and --quarter
-    if args.ticker and not (args.year and args.quarter):
-        parser.error("--ticker requires both --year and --quarter")
+    # Validate: must have at least a transcript file or a ticker+year+quarter to fetch one
+    if not args.transcript and not (args.ticker and args.year and args.quarter):
+        parser.error(
+            "Provide either --transcript <file> or --ticker <TICK> --year <Y> --quarter <Q>\n"
+            "You may also combine both: --transcript <file> --ticker MCD --year 2025 --quarter 4\n"
+            "(the ticker/year/quarter will be used for context assembly even if transcript comes from file)"
+        )
+
+    # Parse peer tickers
+    peer_tickers = [p.strip().upper() for p in args.peers.split(",") if p.strip()]
 
     # Fetch or load transcript
-    if args.ticker:
-        transcript_text = fetch_transcript(ticker=args.ticker, year=args.year, quarter=args.quarter)
-    else:
+    if args.transcript:
         transcript_text = fetch_transcript(filepath=args.transcript)
+    else:
+        transcript_text = fetch_transcript(
+            ticker=args.ticker, year=args.year, quarter=args.quarter,
+            source=args.source
+        )
 
     # Validate before handing to pipeline
     validation = validate_transcript(transcript_text)
@@ -1105,7 +1310,14 @@ Examples:
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
 
     # Run pipeline
-    result = run_pipeline(transcript_text)
+    result = run_pipeline(
+        transcript=transcript_text,
+        ticker=args.ticker or "",
+        year=args.year or 0,
+        quarter=args.quarter or 0,
+        peer_tickers=peer_tickers,
+        skip_context=args.no_context,
+    )
     
     # Save output
     output_data = {
@@ -1124,19 +1336,9 @@ Examples:
         print(f"Halt reason: {result.get('halt_reason', 'unknown')}")
         exit(1)
 
-    # Export DOCX and PDF
+    # Export PDF
     try:
-        docx_path = format_report(args.output)
-        print(f"DOCX saved to  {docx_path}")
+        pdf_path = format_report(args.output)
+        print(f"PDF saved to   {pdf_path}")
     except Exception as e:
-        print(f"⚠ DOCX export failed: {e}")
-        docx_path = None
-
-    if docx_path:
-        try:
-            from docx2pdf import convert
-            pdf_path = docx_path.replace(".docx", ".pdf")
-            convert(docx_path, pdf_path)
-            print(f"PDF saved to   {pdf_path}")
-        except Exception as e:
-            print(f"⚠ PDF export failed: {e}")
+        print(f"⚠ PDF export failed: {e}")

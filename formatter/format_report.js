@@ -33,20 +33,64 @@ const AMBER_BG    = "FEF3C7";   // amber card bg
 const WHITE       = "FFFFFF";
 const NAVY_FAINT  = "9CB3D4";   // faint navy for masthead subtext
 
-const CONTENT_WIDTH = 9360;     // DXA — US Letter minus 1" margins
+const CONTENT_WIDTH = 9640;     // DXA — US Letter (12240) minus 0.9" left+right margins (1300+1300)
 
 // =============================================================================
 // UTILITIES
 // =============================================================================
 
-// Strip inline fact citations: [F001], [F001, F002], (F001), (F001, F002)
+// Strip inline citations and any bracketed model annotations
 function stripCitations(text) {
   if (!text) return "";
   return text
-    .replace(/\[F\d{3}(?:,\s*F\d{3})*\]/g, "")
-    .replace(/\(F\d{3}(?:,\s*F\d{3})*\)/g, "")
-    .replace(/[ \t]{2,}/g, " ")   // collapse spaces/tabs only — preserve \n paragraph breaks
+    .replace(/\[F[^\]]*\]/g, "")                     // [F001], [F020 is not available...], etc.
+    .replace(/\(F\d{3}(?:,\s*F\d{3})*\)/g, "")      // (F001), (F001, F002)
+    .replace(/\(Fact ID:[^)]*\)/gi, "")               // (Fact ID: F004, F006)
+    .replace(/\[Context:[^\]]*\]/gi, "")              // [Context: Prior Quarter Commitments]
+    .replace(/[ \t]{2,}/g, " ")                      // collapse extra spaces/tabs
+    .replace(/\s+([,;.])/g, "$1")                    // remove space before punctuation
     .trim();
+}
+
+// Format a raw pipeline metric value for compact card display.
+// e.g. "$1,989 million" → "$1.99B", "> $6 billion" → ">$6B", "4.8 million" → "4.8M"
+function formatDisplayValue(raw) {
+  if (!raw) return "—";
+  const s = String(raw).trim();
+
+  // "> $X billion/million" patterns
+  const gtBillionMatch = s.match(/^>\s*\$?([\d,]+\.?\d*)\s*billion/i);
+  if (gtBillionMatch) return `> $${parseFloat(gtBillionMatch[1].replace(/,/g, '')).toFixed(0)}B`;
+  const gtMillionMatch = s.match(/^>\s*\$?([\d,]+\.?\d*)\s*million/i);
+  if (gtMillionMatch) {
+    const n = parseFloat(gtMillionMatch[1].replace(/,/g, ''));
+    return n >= 1000 ? `> $${(n/1000).toFixed(1)}B` : `> $${Math.round(n)}M`;
+  }
+
+  // "$X billion" or "$X.Y billion"
+  const billionMatch = s.match(/^\$?([\d,]+\.?\d*)\s*billion/i);
+  if (billionMatch) return `$${parseFloat(billionMatch[1].replace(/,/g, '')).toFixed(1)}B`;
+
+  // "$X million" or "$X.Y million"
+  const millionMatch = s.match(/^\$?([\d,]+\.?\d*)\s*million/i);
+  if (millionMatch) {
+    const n = parseFloat(millionMatch[1].replace(/,/g, ''));
+    if (n >= 1000) return `$${(n/1000).toFixed(2)}B`;
+    // Round to nearest integer, unless it has meaningful decimal
+    return `$${n % 1 === 0 ? n : n.toFixed(0)}M`;
+  }
+
+  // "X million" (no dollar sign — e.g. MUPs)
+  const plainMillionMatch = s.match(/^([\d,]+\.?\d*)\s*million/i);
+  if (plainMillionMatch) {
+    const n = parseFloat(plainMillionMatch[1].replace(/,/g, ''));
+    return `${n % 1 === 0 ? n : n.toFixed(1)}M`;
+  }
+
+  // Already short (under 10 chars) — return as-is
+  if (s.length <= 12) return s;
+
+  return s;
 }
 
 // Return score background fill based on value
@@ -71,11 +115,14 @@ function scoreBar(score) {
 
 // Extract the most quotable sentence from a narrative block
 // Skips the lead paragraph; prefers sentences with numbers/financial language
-function extractPullQuote(narrative, minLen = 90, maxLen = 230) {
+function extractPullQuote(narrative, minLen = 90, maxLen = 400) {
   const cleaned = stripCitations(narrative || "").replace(/\*\*/g, "");
   const paras = cleaned.split(/\n\n+/).slice(1); // skip lead para
   const body  = paras.join(" ");
-  const sentences = body.match(/[^.!?]+[.!?]+/g) || [];
+  // Protect decimal points (e.g. $6.5, 43.2%) so they don't split sentences
+  const protected_ = body.replace(/(\d)\.(\d)/g, "$1\x01$2");
+  const rawSentences = protected_.match(/[^.!?]+[.!?]+/g) || [];
+  const sentences = rawSentences.map(s => s.replace(/\x01/g, ".").trim());
 
   let best = null, bestScore = -1;
   sentences.forEach(s => {
@@ -140,13 +187,17 @@ function para(children, opts = {}) {
     children: Array.isArray(children) ? children : [children],
     border: opts.border || undefined,
     indent: opts.indent || undefined,
+    keepNext: opts.keepNext || false,
+    keepLines: opts.keepLines || false,
   });
 }
 
-function spacer(pts = 6) {
+// pts = visual gap in points. Uses spacing.after for reliable PDF rendering.
+function spacer(pts = 8, keepNext = false) {
   return new Paragraph({
-    children: [new TextRun({ text: "", size: pts * 2 })],
-    spacing: { before: 0, after: 0 },
+    children: [new TextRun({ text: "", size: 4 })],   // 2pt invisible anchor
+    spacing: { before: 0, after: pts * 20 },          // after in twentieths of a point
+    keepNext,
   });
 }
 
@@ -189,7 +240,10 @@ function buildHeader(snapshot) {
   const ticker   = snapshot.ticker  || "";
   const quarter  = snapshot.quarter || "";
   const sector   = snapshot.sector  || "";
-  const headline = stripCitations(snapshot.headline || "");
+
+  // Format a publication date string: e.g. "17 March 2026"
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 
   return [
     // ── Full-bleed navy masthead ──────────────────────────────────────────────
@@ -198,42 +252,48 @@ function buildHeader(snapshot) {
       columnWidths: [CONTENT_WIDTH],
       rows: [new TableRow({ children: [
         cell([
-          // Publication label
-          para(run("CHORUS AI  ·  EARNINGS CALL INTELLIGENCE", {
-            bold: true, size: 16, color: NAVY_FAINT, font: "Arial",
-          }), { align: AlignmentType.CENTER, spaceAfter: 100 }),
+          // Publication label + date on same row
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 120, line: 240 },
+            children: [
+              new TextRun({ text: "CHORUS AI", bold: true, size: 16, color: GOLD, font: "Arial" }),
+              new TextRun({ text: "   \u00B7   EARNINGS CALL INTELLIGENCE   \u00B7   ", size: 16, color: NAVY_FAINT, font: "Arial" }),
+              new TextRun({ text: dateStr.toUpperCase(), size: 16, color: NAVY_FAINT, font: "Arial" }),
+            ],
+          }),
 
           // Company name — hero element
           para(run(company, {
-            bold: true, size: 72, color: WHITE, font: "Arial",
-          }), { align: AlignmentType.CENTER, spaceAfter: 80 }),
+            bold: true, size: 80, color: WHITE, font: "Arial",
+          }), { align: AlignmentType.CENTER, spaceAfter: 60 }),
 
           // Internal gold rule
           new Paragraph({
             children: [new TextRun({ text: "" })],
-            border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: GOLD, space: 1 } },
+            border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: GOLD, space: 1 } },
             spacing: { before: 0, after: 80 },
           }),
 
           // Ticker · Quarter · Sector
           para([
-            run(ticker, { size: 20, color: NAVY_FAINT, font: "Arial" }),
-            run("   ·   ", { size: 20, color: NAVY_FAINT }),
+            run(ticker, { size: 20, color: GOLD, font: "Arial", bold: true }),
+            run("   \u00B7   ", { size: 20, color: NAVY_FAINT }),
             run(quarter + " Earnings Call", { size: 20, color: NAVY_FAINT, font: "Arial" }),
             ...(sector ? [
-              run("   ·   ", { size: 20, color: NAVY_FAINT }),
+              run("   \u00B7   ", { size: 20, color: NAVY_FAINT }),
               run(sector, { size: 20, color: NAVY_FAINT, font: "Arial" }),
             ] : []),
-          ], { align: AlignmentType.CENTER, spaceAfter: 80 }),
+          ], { align: AlignmentType.CENTER, spaceAfter: 60 }),
 
-        ], { fill: NAVY, noBorder: true, padV: 280, padH: 360 }),
+        ], { fill: NAVY, noBorder: true, padV: 300, padH: 360 }),
       ]})]
     }),
 
     // Heavy gold rule — the masthead's bottom edge
     new Paragraph({
       children: [new TextRun({ text: "" })],
-      border: { bottom: { style: BorderStyle.SINGLE, size: 28, color: GOLD, space: 1 } },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 32, color: GOLD, space: 1 } },
       spacing: { before: 0, after: 0 },
     }),
   ];
@@ -253,23 +313,23 @@ function buildHeadline(snapshot, verificationSummary) {
   const elements = [];
 
   // ── Headline — large, editorial ──────────────────────────────────────────
-  elements.push(spacer(14));
+  elements.push(spacer(16));
   elements.push(new Paragraph({
     children: [new TextRun({
       text: headline,
       font: "Georgia",
-      size: 38,
+      size: 40,
       bold: true,
       color: CHARCOAL,
     })],
-    spacing: { before: 0, after: 120, line: 360 },
+    spacing: { before: 0, after: 160, line: 380 },
   }));
 
   // Gold rule under headline
   elements.push(new Paragraph({
     children: [new TextRun({ text: "" })],
     border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: GOLD, space: 1 } },
-    spacing: { before: 0, after: 120 },
+    spacing: { before: 0, after: 140 },
   }));
 
   // ── Deck copy — the editorial "why you should care" ────────────────────
@@ -282,7 +342,7 @@ function buildHeadline(snapshot, verificationSummary) {
         italics: true,
         color: DARK_GRAY,
       })],
-      spacing: { before: 0, after: 160, line: 320 },
+      spacing: { before: 0, after: 200, line: 340 },
     }));
   }
 
@@ -295,9 +355,9 @@ function buildHeadline(snapshot, verificationSummary) {
       `   ·   Model agreement: ${verificationSummary.model_agreement}`,
       { size: 16, color: MID_GRAY, font: "Arial" }
     ),
-  ], { spaceAfter: 200 }));
+  ], { spaceAfter: 160 }));
 
-  elements.push(spacer(8));
+  elements.push(spacer(14));
   return elements;
 }
 
@@ -312,7 +372,7 @@ function buildMetricCards(snapshot) {
 
   elements.push(
     para(run("BY THE NUMBERS", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }),
-         { spaceAfter: 0 })
+         { spaceAfter: 80 })
   );
 
   const cardW = Math.floor(CONTENT_WIDTH / financials.length);
@@ -331,7 +391,7 @@ function buildMetricCards(snapshot) {
 
   // Row 2 — card body
   const cardCells = financials.map((m, i) => {
-    const value = m.reported_value || "—";
+    const value = formatDisplayValue(m.reported_value);
     const label = m.metric_name || "";
     const delta = m.yoy_change || "";
     const vs    = m.vs_estimate || "";
@@ -343,10 +403,12 @@ function buildMetricCards(snapshot) {
 
     const cardFill = i % 2 === 0 ? LIGHT_BG : WHITE;
 
+    // Smaller font for long values, to keep them on one line
+    const valueSize = value.length > 6 ? 40 : 52;
     return cell([
       para(run(shortLabel, { size: 16, color: MID_GRAY, font: "Arial" }),
            { align: AlignmentType.CENTER, spaceAfter: 50 }),
-      para(run(value, { bold: true, size: 52, color: NAVY, font: "Arial" }),
+      para(run(value, { bold: true, size: valueSize, color: NAVY, font: "Arial" }),
            { align: AlignmentType.CENTER, spaceAfter: 20 }),
       delta
         ? para(run(delta, { bold: true, size: 22, color: deltaColor, font: "Arial" }),
@@ -368,7 +430,7 @@ function buildMetricCards(snapshot) {
     ],
   }));
 
-  elements.push(spacer(12));
+  elements.push(spacer(16));
   return elements;
 }
 
@@ -381,17 +443,17 @@ function buildTakeaways(snapshot) {
 
   const elements = [];
   elements.push(divider(BORDER, 6));
-  elements.push(spacer(4));
+  elements.push(spacer(10));
   elements.push(
     para(run("THE STORY IN THREE POINTS", { bold: true, size: 22, color: MID_GRAY, font: "Arial" }),
-         { spaceAfter: 100 })
+         { spaceAfter: 120 })
   );
 
   const numW  = 520;
   const textW = CONTENT_WIDTH - numW;
 
   takeaways.forEach((t, i) => {
-    const text = stripCitations(t.text || "");
+    const text = stripCitations(t.text || "").replace(/\*\*/g, "");
     const num  = String(t.number || i + 1);
 
     // Try to split into bold lead sentence + body
@@ -423,7 +485,7 @@ function buildTakeaways(snapshot) {
       width: textW,
       fill: cardFill,
       borderColor: cardBorder,
-      padV: 160, padH: 200,
+      padV: 200, padH: 220,
       vAlign: VerticalAlign.CENTER,
     });
 
@@ -432,12 +494,12 @@ function buildTakeaways(snapshot) {
       columnWidths: [numW, textW],
       rows: [new TableRow({ children: [numberCell, textCell] })],
     }));
-    elements.push(spacer(5));
+    elements.push(spacer(8));
   });
 
-  elements.push(spacer(8));
+  elements.push(spacer(14));
   elements.push(divider(BORDER, 6));
-  elements.push(spacer(8));
+  elements.push(spacer(14));
   return elements;
 }
 
@@ -472,11 +534,11 @@ function buildSignals(sections) {
 
   const headerRow = new TableRow({ children: [
     cell(
-      para(run("  ▲  GREEN FLAGS", { bold: true, size: 21, color: WHITE, font: "Arial" })),
+      para(run("+ GREEN FLAGS", { bold: true, size: 21, color: WHITE, font: "Arial" })),
       { width: colW, fill: "166534", noBorder: true, padV: 100 }
     ),
     cell(
-      para(run("  ▼  WATCH POINTS", { bold: true, size: 21, color: WHITE, font: "Arial" })),
+      para(run("- WATCH POINTS", { bold: true, size: 21, color: WHITE, font: "Arial" })),
       { width: colW, fill: "991B1B", noBorder: true, padV: 100 }
     ),
   ]});
@@ -508,7 +570,7 @@ function buildSignals(sections) {
     rows: [headerRow, ...dataRows],
   }));
 
-  elements.push(spacer(4));
+  elements.push(spacer(14));
   return elements;
 }
 
@@ -519,10 +581,10 @@ function buildScorecard(radarScores, chartPngPath) {
   const elements = [];
 
   elements.push(new Paragraph({ children: [new PageBreak()], spacing: { before: 0, after: 0 } }));
-  elements.push(spacer(4));
+  elements.push(spacer(12));
   elements.push(
     para(run("EARNINGS CALL RADAR", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }),
-         { spaceAfter: 80 })
+         { spaceAfter: 120 })
   );
 
   // Radar chart
@@ -530,10 +592,10 @@ function buildScorecard(radarScores, chartPngPath) {
     const imageBuffer = fs.readFileSync(chartPngPath);
     elements.push(new Paragraph({
       alignment: AlignmentType.CENTER,
-      spacing: { before: 0, after: 160 },
+      spacing: { before: 0, after: 200 },
       children: [new ImageRun({
         data: imageBuffer,
-        transformation: { width: 380, height: 380 },
+        transformation: { width: 400, height: 400 },
         type: "png",
       })],
     }));
@@ -556,7 +618,7 @@ function buildScorecard(radarScores, chartPngPath) {
     const scoreW = 720;
     const noteW  = CONTENT_WIDTH - labelW - scoreW;
 
-    const headerRow = new TableRow({ children: [
+    const headerRow = new TableRow({ cantSplit: true, tableHeader: true, children: [
       cell(para(run("DIMENSION", { bold: true, size: 18, color: WHITE, font: "Arial" })),
            { width: labelW, fill: NAVY, noBorder: true }),
       cell(para(run("SCORE", { bold: true, size: 18, color: WHITE, font: "Arial" }),
@@ -566,35 +628,27 @@ function buildScorecard(radarScores, chartPngPath) {
            { width: noteW, fill: NAVY, noBorder: true }),
     ]});
 
-    const DIMENSION_FALLBACK_RATIONALE = {
-      revenue_momentum:    "Score reflects the revenue growth rate and performance relative to expectations for the quarter.",
-      margin_health:       "Score reflects operating margin direction and capital expenditure trajectory observed this quarter.",
-      guidance_confidence: "Score reflects the number and specificity of forward-looking commitments made by management.",
-      mgmt_transparency:   "Score reflects management's directness in Q&A and the completeness of disclosures relative to analyst questions asked.",
-      strategic_clarity:   "Score reflects the coherence between management's stated priorities and observable capital allocation decisions.",
-      earnings_quality:    "Score reflects the proportion of recurring versus one-time items contributing to reported results.",
-      forward_visibility:  "Score reflects the quantity and precision of quantitative forward guidance provided across revenue, margins, and capital expenditure.",
-    };
-
     const dataRows = radarScores.dimension_scores.map((d, i) => {
       const name      = DISPLAY_NAMES[d.dimension] || d.dimension;
       const score     = d.published_score;
       const rawRationale = (d.scoring_rationale || "").trim();
-      const rationale = (rawRationale.length > 8 ? rawRationale : (DIMENSION_FALLBACK_RATIONALE[d.dimension] || "Score reflects analysis of this dimension against the quarter's available evidence.")).substring(0, 200);
+      const rationale = rawRationale.length > 8
+        ? rawRationale.substring(0, 300)
+        : "(Rationale unavailable — pipeline retry did not recover an explanation for this score.)";
       const rowFill   = i % 2 === 0 ? WHITE : LIGHT_BG;
       const tc        = scoreTextColor(score);
 
-      return new TableRow({ children: [
+      return new TableRow({ cantSplit: true, children: [
         cell(para(run(name, { bold: true, size: 21, font: "Calibri" })),
-             { width: labelW, fill: rowFill, borderColor: BORDER }),
+             { width: labelW, fill: rowFill, borderColor: BORDER, padV: 160 }),
         cell([
-          para(run(String(score), { bold: true, size: 34, color: tc, font: "Arial" }),
-               { align: AlignmentType.CENTER, spaceAfter: 20 }),
+          para(run(String(score), { bold: true, size: 36, color: tc, font: "Arial" }),
+               { align: AlignmentType.CENTER, spaceAfter: 30 }),
           para(run(scoreBar(score), { size: 14, color: tc, font: "Arial" }),
                { align: AlignmentType.CENTER, spaceAfter: 0 }),
-        ], { width: scoreW, fill: scoreColor(score), borderColor: BORDER }),
+        ], { width: scoreW, fill: scoreColor(score), borderColor: BORDER, padV: 140 }),
         cell(para(run(rationale, { size: 19, italics: true, color: DARK_GRAY })),
-             { width: noteW, fill: rowFill, borderColor: BORDER }),
+             { width: noteW, fill: rowFill, borderColor: BORDER, padV: 160 }),
       ]});
     });
 
@@ -636,14 +690,19 @@ function renderS2aColumns(elements, processedParas, accent, accentBg, pullQuoteT
     const p    = introBlock.paras[0];
     const clean = p.replace(/\*\*/g, "");
     const m    = clean.match(/^(.*?[.!?])\s*([\s\S]*)$/);
-    const lead = m ? m[1] : clean;
-    const rest = m ? m[2] : "";
+    let lead = m ? m[1] : clean;
+    let rest = m ? m[2] : "";
+    if (lead.length > 130) {
+      const cutoff = clean.lastIndexOf(" ", 120);
+      lead = cutoff > 60 ? clean.substring(0, cutoff) : clean.substring(0, 120);
+      rest = clean.substring(lead.length).trim();
+    }
     elements.push(new Paragraph({
       children: [
         new TextRun({ text: lead, font: "Georgia", size: 27, bold: true, color: NAVY }),
         ...(rest ? [new TextRun({ text: "  " + rest, font: "Georgia", size: 24, color: DARK_GRAY })] : []),
       ],
-      spacing: { before: 80, after: 220, line: 340 },
+      spacing: { before: 0, after: 240, line: 360 },
       indent: { left: 480, right: 280 },
       border: { left: { style: BorderStyle.SINGLE, size: 34, color: accent, space: 14 } },
     }));
@@ -689,7 +748,7 @@ function renderS2aColumns(elements, processedParas, accent, accentBg, pullQuoteT
       });
       out.push(new Paragraph({
         children: runs,
-        spacing: { before: 0, after: 120, line: 290 },
+        spacing: { before: 0, after: 140, line: 300 },
       }));
     });
 
@@ -764,32 +823,52 @@ function buildNarrative(sections) {
       subtitleColor: "6EE7B7",
       subtitle: "Context, implications & what to watch",
     },
+    {
+      id: "S2e",
+      label: "THE TRACK RECORD",
+      number: "05",
+      accent: "7C3AED",
+      accentBg: "F5F3FF",
+      fill: "4C1D95",
+      subtitleColor: "C4B5FD",
+      subtitle: "Management credibility — promises made vs. delivered",
+    },
+    {
+      id: "S2f",
+      label: "THE INDUSTRY VIEW",
+      number: "06",
+      accent: "0891B2",
+      accentBg: "ECFEFF",
+      fill: "164E63",
+      subtitleColor: "67E8F9",
+      subtitle: "Peer benchmarking & competitive positioning",
+    },
   ];
 
   SECTION_META.forEach(({ id, label, number, accent, accentBg, fill, subtitleColor, subtitle }) => {
-    elements.push(spacer(8));
+    // Section divider — breathing room, no forced page break so Word can flow naturally
+    elements.push(spacer(20));
 
-    // ---- MAGAZINE-STYLE SECTION HEADER: number block + title panel ----
-    const numBlockW = 860;
-    const titleBlockW = CONTENT_WIDTH - numBlockW;
-    elements.push(new Table({
-      width: { size: CONTENT_WIDTH, type: WidthType.DXA },
-      columnWidths: [numBlockW, titleBlockW],
-      rows: [new TableRow({ children: [
-        // Large section number in accent color
-        cell(
-          para(run(number, { bold: true, size: 52, color: WHITE, font: "Arial" }),
-               { align: AlignmentType.CENTER, spaceAfter: 0 }),
-          { width: numBlockW, fill: accent, noBorder: true, padV: 180, padH: 60, vAlign: VerticalAlign.CENTER }
-        ),
-        // Section title + subtitle on dark fill
-        cell([
-          para(run(label, { bold: true, size: 22, color: WHITE, font: "Arial" }),
-               { spaceAfter: 60 }),
-          para(run(subtitle, { size: 18, italics: true, color: subtitleColor, font: "Calibri" }),
-               { spaceAfter: 0 }),
-        ], { width: titleBlockW, fill, noBorder: true, padV: 150, padH: 220, vAlign: VerticalAlign.CENTER }),
-      ]})]
+    // ---- MAGAZINE-STYLE SECTION HEADER as a Paragraph ----
+    // Using a Paragraph (not a Table) so keepNext: true reliably keeps the header
+    // glued to the first line of section content in Word's layout engine.
+    elements.push(new Paragraph({
+      shading: { type: ShadingType.SOLID, fill: fill, color: fill },
+      border: {
+        top:    { style: BorderStyle.NONE, size: 0, color: fill },
+        bottom: { style: BorderStyle.NONE, size: 0, color: fill },
+        right:  { style: BorderStyle.NONE, size: 0, color: fill },
+        left:   { style: BorderStyle.SINGLE, size: 36, color: accent, space: 10 },
+      },
+      spacing: { before: 160, after: 160, line: 320, lineRule: "auto" },
+      indent: { left: 420 },
+      keepNext: true,
+      keepLines: true,
+      children: [
+        new TextRun({ text: number, bold: true, size: 60, color: accent, font: "Arial" }),
+        new TextRun({ text: "  " + label, bold: true, size: 22, color: "FFFFFF", font: "Arial", break: 1 }),
+        new TextRun({ text: subtitle, size: 18, italics: true, color: subtitleColor, font: "Calibri", break: 1 }),
+      ],
     }));
 
     const section = sections[id];
@@ -802,7 +881,7 @@ function buildNarrative(sections) {
       return;
     }
 
-    elements.push(spacer(4));
+    elements.push(spacer(10));
 
     // ---- Parse narrative: separate "to watch" list for S2d ----
     const narrative = stripCitations(section.narrative || "");
@@ -868,8 +947,15 @@ function buildNarrative(sections) {
         isFirst = false;
         const cleanText = p.replace(/\*\*/g, "");
         const firstSentMatch = cleanText.match(/^(.*?[.!?])\s*([\s\S]*)$/);
-        const leadSentence = firstSentMatch ? firstSentMatch[1] : cleanText;
-        const rest = firstSentMatch ? firstSentMatch[2] : "";
+        // Guard: if the "lead" is too long (no early period), cap it at 120 chars
+        let leadSentence = firstSentMatch ? firstSentMatch[1] : cleanText;
+        let rest = firstSentMatch ? firstSentMatch[2] : "";
+        if (leadSentence.length > 130) {
+          // Hard-split at word boundary near 120 chars
+          const cutoff = cleanText.lastIndexOf(" ", 120);
+          leadSentence = cutoff > 60 ? cleanText.substring(0, cutoff) : cleanText.substring(0, 120);
+          rest = cleanText.substring(leadSentence.length).trim();
+        }
 
         const leadRuns = [
           new TextRun({ text: leadSentence, font: "Georgia", size: 27, bold: true, color: NAVY }),
@@ -880,7 +966,7 @@ function buildNarrative(sections) {
 
         elements.push(new Paragraph({
           children: leadRuns,
-          spacing: { before: 80, after: 220, line: 340 },
+          spacing: { before: 0, after: 240, line: 360 },
           indent: { left: 480, right: 280 },
           border: {
             left: { style: BorderStyle.SINGLE, size: 34, color: accent, space: 14 },
@@ -954,7 +1040,7 @@ function buildNarrative(sections) {
 
       elements.push(new Paragraph({
         children: runs,
-        spacing: { before: 0, after: 170, line: 300 },
+        spacing: { before: 0, after: 160, line: 320 },
       }));
 
       bodyParaCount++;
@@ -1185,16 +1271,261 @@ function buildVerification(verification, radarScores) {
 // =============================================================================
 // MAIN
 // =============================================================================
+// =============================================================================
+// EDITORIAL COMMENTARY (S6 — The Lex Writer)
+// =============================================================================
+function buildEditorial(editorial) {
+  if (!editorial || !editorial.narrative) return [];
+  const elements = [];
+
+  elements.push(spacer(20, true));  // keepNext: anchors spacer to editorial header below
+
+  // Section banner — accent stripe left + navy header panel
+  const stripeW = 80;
+  const headerW = CONTENT_WIDTH - stripeW;
+  elements.push(new Table({
+    width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+    columnWidths: [stripeW, headerW],
+    rows: [new TableRow({ cantSplit: true, children: [
+      cell(para(run("", { size: 2 })),
+           { width: stripeW, fill: GOLD, noBorder: true, padV: 160, padH: 0 }),
+      cell([
+        para(run("EDITORIAL", { bold: true, size: 17, color: GOLD, font: "Arial" }),
+             { spaceAfter: 40 }),
+        para(run("Analysis  \u00B7  Independent Perspective", {
+          size: 15, italics: false, color: NAVY_FAINT, font: "Arial"
+        }), { spaceAfter: 0, keepNext: true }),
+      ], { width: headerW, fill: NAVY, noBorder: true, padV: 160, padH: 260, vAlign: VerticalAlign.CENTER }),
+    ]})]
+  }));
+
+  elements.push(spacer(8));
+
+  // Editorial prose — Georgia serif, proper FT Lex layout
+  const rawParas = editorial.narrative.split(/\n+/).map(p => p.trim()).filter(Boolean);
+
+  rawParas.forEach((p, i) => {
+    const cleaned = stripCitations(p);
+    if (i === 0) {
+      // Lede paragraph: large Georgia serif, drop cap feel
+      const firstSentMatch = cleaned.match(/^(.*?[.!?])\s*([\s\S]*)$/);
+      const lede = firstSentMatch ? firstSentMatch[1] : cleaned;
+      const rest = firstSentMatch ? firstSentMatch[2] : "";
+
+      elements.push(new Paragraph({
+        children: [
+          new TextRun({ text: lede, font: "Georgia", size: 28, bold: true, color: NAVY }),
+          ...(rest ? [new TextRun({ text: "  " + rest, font: "Georgia", size: 24, italics: true, color: DARK_GRAY })] : []),
+        ],
+        spacing: { before: 0, after: 200, line: 360 },
+        indent: { left: 0, right: 0 },
+      }));
+    } else {
+      // Body paragraphs: Georgia, normal weight, generous leading
+      elements.push(new Paragraph({
+        children: [new TextRun({ text: cleaned, font: "Georgia", size: 22, color: CHARCOAL })],
+        spacing: { before: 0, after: 160, line: 320 },
+      }));
+    }
+  });
+
+  // Hairline rule + disclaimer
+  elements.push(spacer(6));
+  elements.push(new Paragraph({
+    children: [new TextRun({ text: "" })],
+    border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: GOLD, space: 1 } },
+    spacing: { before: 0, after: 80 },
+  }));
+  elements.push(para(
+    run("This commentary is the analytical judgment of the Chorus AI system and does not constitute investment advice.", {
+      size: 16, italics: true, color: MID_GRAY, font: "Calibri"
+    }),
+    { spaceAfter: 0 }
+  ));
+
+  elements.push(spacer(12));
+  return elements;
+}
+
+
+// =============================================================================
+// CONTEXT PANEL — Historical trend chart + consensus estimates + stock reaction
+// =============================================================================
+function buildContextPanel(contextBundle, trendChartPath) {
+  if (!contextBundle) return [];
+  const elements = [];
+
+  const hasChart = trendChartPath && fs.existsSync(trendChartPath);
+  const hasConsensus = contextBundle.consensus_estimates && contextBundle.consensus_estimates.length > 0;
+  const hasReaction = contextBundle.stock_reaction && contextBundle.stock_reaction.reaction_pct != null;
+  const hasPrior = contextBundle.prior_quarter_summaries && contextBundle.prior_quarter_summaries.length > 0;
+
+  if (!hasChart && !hasConsensus && !hasReaction && !hasPrior) return [];
+
+  elements.push(spacer(8, true));  // keepNext: anchors to the header table below
+
+  // Section header
+  elements.push(new Table({
+    width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+    columnWidths: [CONTENT_WIDTH],
+    rows: [new TableRow({ cantSplit: true, children: [
+      cell([
+        para(run("CONTEXTUAL INTELLIGENCE", { bold: true, size: 18, color: WHITE, font: "Arial" }),
+             { spaceAfter: 60 }),
+        para(run("Historical performance, market reaction & peer context", {
+          size: 17, italics: true, color: NAVY_FAINT, font: "Calibri"
+        }), { spaceAfter: 0, keepNext: true }),
+      ], { width: CONTENT_WIDTH, fill: "2563EB", noBorder: true, padV: 150, padH: 260, vAlign: VerticalAlign.CENTER }),
+    ]})]
+  }));
+
+  elements.push(spacer(6));
+
+  // Trend chart
+  if (hasChart) {
+    try {
+      const chartBytes = fs.readFileSync(trendChartPath);
+      // 9.5 : 4.8 aspect ratio, width fills content area (643px @ 96dpi = 6.7")
+      elements.push(new Paragraph({
+        children: [new ImageRun({
+          data: chartBytes,
+          transformation: { width: 643, height: 325 },
+          type: "png",
+        })],
+        spacing: { before: 0, after: 120 },
+        alignment: AlignmentType.CENTER,
+      }));
+    } catch (e) {
+      // Chart read failed — skip
+    }
+  }
+
+  // Consensus + stock reaction row
+  if (hasConsensus || hasReaction) {
+    const leftW = Math.floor(CONTENT_WIDTH * 0.55);
+    const rightW = CONTENT_WIDTH - leftW;
+
+    const consensusRows = hasConsensus ? contextBundle.consensus_estimates.map(est => {
+      const verdictColor = est.verdict === 'Beat' ? GREEN : est.verdict === 'Miss' ? RED : CHARCOAL;
+      return new TableRow({ children: [
+        cell(para(run(est.metric, { size: 18, bold: true, color: CHARCOAL })),
+             { width: 1400, fill: LIGHT_BG, noBorder: true, padV: 80, padH: 120 }),
+        cell(para(run(est.estimate || '—', { size: 18, color: MID_GRAY })),
+             { width: 1200, fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
+        cell(para(run(est.actual || '—', { size: 18, color: CHARCOAL, bold: true })),
+             { width: 1200, fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
+        cell(para(run(`${est.verdict || ''} ${est.surprise_pct || ''}`.trim(), { size: 18, bold: true, color: verdictColor })),
+             { width: 1500, fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
+      ]});
+    }) : [];
+
+    const consensusTable = hasConsensus ? new Table({
+      width: { size: leftW, type: WidthType.DXA },
+      columnWidths: [1400, 1200, 1200, 1500],
+      rows: [
+        new TableRow({ tableHeader: true, children: [
+          cell(para(run("Metric", { size: 17, bold: true, color: MID_GRAY })),
+               { width: 1400, fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
+          cell(para(run("Estimate", { size: 17, bold: true, color: MID_GRAY })),
+               { width: 1200, fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
+          cell(para(run("Actual", { size: 17, bold: true, color: MID_GRAY })),
+               { width: 1200, fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
+          cell(para(run("Result", { size: 17, bold: true, color: MID_GRAY })),
+               { width: 1500, fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
+        ]}),
+        ...consensusRows,
+      ],
+    }) : null;
+
+    const reactionColor = hasReaction
+      ? (contextBundle.stock_reaction.reaction_pct >= 2 ? GREEN
+        : contextBundle.stock_reaction.reaction_pct <= -2 ? RED
+        : AMBER)
+      : CHARCOAL;
+    const reactionSign = hasReaction && contextBundle.stock_reaction.reaction_pct >= 0 ? '+' : '';
+    const reactionPct = hasReaction ? `${reactionSign}${contextBundle.stock_reaction.reaction_pct.toFixed(1)}%` : null;
+
+    const reactionContent = hasReaction ? [
+      para(run("MARKET REACTION", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }), { spaceAfter: 60 }),
+      para(run(reactionPct, { bold: true, size: 40, color: reactionColor, font: "Arial" }), { spaceAfter: 40 }),
+      para(run(contextBundle.stock_reaction.reaction_label || '', { size: 18, italics: true, color: MID_GRAY }), { spaceAfter: 40 }),
+      ...(contextBundle.stock_reaction.price_day_before ? [
+        para(run(`Pre:  $${contextBundle.stock_reaction.price_day_before.toFixed(2)}   →   Post:  $${contextBundle.stock_reaction.price_day_after?.toFixed(2) || '—'}`,
+             { size: 17, color: MID_GRAY }))
+      ] : []),
+    ] : [para(run(''))];
+
+    if (hasConsensus) {
+      // Two-column: consensus table left, market reaction right
+      const noOuterBorder = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
+      elements.push(new Table({
+        width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+        columnWidths: [leftW, rightW],
+        borders: { top: noOuterBorder, bottom: noOuterBorder, left: noOuterBorder, right: noOuterBorder, insideH: noOuterBorder, insideV: noOuterBorder },
+        rows: [new TableRow({ cantSplit: true, children: [
+          cell([
+            para(run("CONSENSUS vs. ACTUAL", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }), { spaceAfter: 80 }),
+            consensusTable,
+          ], { width: leftW, fill: WHITE, noBorder: true, padV: 120, padH: 160 }),
+          cell(reactionContent, { width: rightW, fill: LIGHT_BG, noBorder: true, padV: 120, padH: 200, vAlign: VerticalAlign.CENTER }),
+        ]})]
+      }));
+    } else if (hasReaction) {
+      // Market reaction only — full-width card, content centered
+      const noOuterBorder = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
+      elements.push(new Table({
+        width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+        columnWidths: [CONTENT_WIDTH],
+        borders: { top: noOuterBorder, bottom: noOuterBorder, left: noOuterBorder, right: noOuterBorder, insideH: noOuterBorder, insideV: noOuterBorder },
+        rows: [new TableRow({ cantSplit: true, children: [
+          cell([
+            para(run("MARKET REACTION", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }),
+                 { align: AlignmentType.CENTER, spaceAfter: 80 }),
+            para(run(reactionPct || "—", { bold: true, size: 52, color: reactionColor, font: "Arial" }),
+                 { align: AlignmentType.CENTER, spaceAfter: 40 }),
+            para(run(contextBundle.stock_reaction.reaction_label || '', { size: 19, italics: true, color: MID_GRAY }),
+                 { align: AlignmentType.CENTER, spaceAfter: 40 }),
+            ...(contextBundle.stock_reaction.price_day_before ? [
+              para(run(
+                `Pre: $${contextBundle.stock_reaction.price_day_before.toFixed(2)}   \u2192   Post: $${contextBundle.stock_reaction.price_day_after?.toFixed(2) || '\u2014'}`,
+                { size: 18, color: MID_GRAY }
+              ), { align: AlignmentType.CENTER, spaceAfter: 0 })
+            ] : []),
+          ], { width: CONTENT_WIDTH, fill: LIGHT_BG, noBorder: true, padV: 180, padH: 560, vAlign: VerticalAlign.CENTER }),
+        ]})]
+      }));
+    }
+  }
+
+  // Trend narrative
+  if (contextBundle.trend_narrative) {
+    elements.push(spacer(6));
+    elements.push(new Paragraph({
+      children: [new TextRun({
+        text: `Trend note: ${contextBundle.trend_narrative}`,
+        size: 18, italics: true, color: MID_GRAY, font: "Calibri"
+      })],
+      spacing: { before: 80, after: 80 },
+      indent: { left: 260, right: 260 },
+    }));
+  }
+
+  elements.push(spacer(8));
+  return elements;
+}
+
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.length < 3) {
-    console.error("Usage: node format_report.js <report_json> <chart_png> <output_docx>");
+    console.error("Usage: node format_report.js <report_json> <chart_png> <output_docx> [trend_chart_png]");
     process.exit(1);
   }
 
-  const [reportJsonPath, chartPngPath, outputDocxPath] = args;
+  const [reportJsonPath, chartPngPath, outputDocxPath, trendChartPathArg] = args;
+  const trendChartPath = (trendChartPathArg && trendChartPathArg.trim()) ? trendChartPathArg : null;
   const reportData = JSON.parse(fs.readFileSync(reportJsonPath, 'utf8'));
-  const { snapshot, sections, radar_scores, verification } = reportData;
+  const { snapshot, editorial, sections, radar_scores, context_bundle, verification } = reportData;
 
   // Build verification summary for header badge
   const groundingVals = verification && verification.source_grounding_scores
@@ -1214,8 +1545,10 @@ async function main() {
     ...buildHeader(snapshot),
     ...buildHeadline(snapshot, verificationSummary),
     ...buildMetricCards(snapshot),
-    ...buildSignals(sections),
     ...buildTakeaways(snapshot),
+    ...buildEditorial(editorial),
+    ...buildContextPanel(context_bundle, trendChartPath),
+    ...buildSignals(sections),
     ...buildScorecard(radar_scores, chartPngPath),
     ...buildNarrative(sections),
     ...buildVerification(verification, radar_scores),
@@ -1230,8 +1563,10 @@ async function main() {
     sections: [{
       properties: {
         page: {
+          // US Letter — 8.5" × 11" in twips (1 inch = 1440 twips)
           size: { width: 12240, height: 15840 },
-          margin: { top: 1080, right: 1080, bottom: 1080, left: 1080 },
+          // Print-quality margins: 1" top/bottom, 0.9" sides
+          margin: { top: 1440, right: 1300, bottom: 1440, left: 1300 },
         },
       },
       children,

@@ -432,3 +432,178 @@ class PipelineRunLog(BaseModel):
         default_factory=list,
         description="Descriptions of any safety flags that triggered Level 3 halt."
     )
+
+
+# =============================================================================
+# CONTEXT BUNDLE — S0 CONTEXT ASSEMBLER OUTPUT
+# Built before the S2 analysis agents run. Provides external intelligence:
+#   - Historical financials (yfinance)
+#   - Stock price reaction on earnings day (yfinance)
+#   - EPS consensus vs. actual (Alpha Vantage — optional)
+#   - Prior quarter transcript summaries (EDGAR)
+#   - Peer company summaries (EDGAR — optional)
+#
+# Agents receive this as a <context> block alongside transcript + FactList.
+# It is CONTEXT, not a source of truth — agents label claims derived from
+# it as "interpretive" since it is not verifiable against the transcript.
+# =============================================================================
+
+class QuarterlySnapshot(BaseModel):
+    """Key financials for one historical quarter (from yfinance)."""
+    quarter_label: str                          # e.g. "Q4 FY2024"
+    period_end: str                             # e.g. "2024-12-31"
+    revenue: Optional[str] = None              # "$1,234M"
+    revenue_yoy_pct: Optional[str] = None      # "+15.2%"
+    gross_margin_pct: Optional[str] = None     # "68.5%"
+    operating_margin_pct: Optional[str] = None # "25.1%"
+    net_income: Optional[str] = None
+    eps_diluted: Optional[str] = None
+
+
+class StockReactionData(BaseModel):
+    """Stock price movement around the earnings announcement."""
+    earnings_date: Optional[str] = None
+    price_day_before: Optional[float] = None
+    price_day_after: Optional[float] = None
+    reaction_pct: Optional[float] = None       # e.g. 5.2 means +5.2%
+    reaction_label: str = "unknown"            # "strong positive", "muted", "negative"
+
+
+class ConsensusEstimate(BaseModel):
+    """One consensus estimate vs. actual result."""
+    metric: str                                # "EPS", "Revenue"
+    period: str                                # e.g. "Q4 FY2025"
+    estimate: Optional[str] = None
+    actual: Optional[str] = None
+    surprise_pct: Optional[str] = None        # e.g. "+2.6%"
+    verdict: Optional[str] = None             # "Beat", "Miss", "In-line"
+
+
+class PriorQuarterSummary(BaseModel):
+    """A compact summary of a prior quarter's results and forward commitments."""
+    quarter_label: str                         # e.g. "Q3 FY2025"
+    key_results: str                           # 2-3 sentences on what actually happened
+    forward_commitments: list[str]             # Specific promises made for future quarters
+    source: str = "edgar"                      # "edgar" or "unavailable"
+
+
+class PeerSummary(BaseModel):
+    """A compact summary of a peer company's most recent quarter."""
+    ticker: str
+    company_name: str
+    quarter_label: str
+    key_metrics: list[str]     # ["Revenue: $X (+Y% YoY)", "Op margin: Z%"]
+    key_themes: list[str]      # ["AI monetization", "margin compression"]
+    source: str = "edgar"      # "edgar" or "unavailable"
+
+
+class ContextBundle(BaseModel):
+    """
+    The complete output of S0 (Context Assembler).
+    Passed as supplementary context to S2 analysis agents.
+
+    IMPORTANT: Data in this bundle is external to the transcript.
+    Agents must label any claims derived from context (not factlist) as interpretive.
+    """
+    ticker: str
+    company_name: str
+    current_quarter: str
+
+    # Historical trend data (prior 4 quarters + current)
+    historical_financials: list[QuarterlySnapshot] = Field(default_factory=list)
+    trend_narrative: str = ""   # Pre-computed 2-3 sentence trend summary
+
+    # Market reaction to this quarter's earnings
+    stock_reaction: Optional[StockReactionData] = None
+
+    # Consensus estimates vs. actuals
+    consensus_estimates: list[ConsensusEstimate] = Field(default_factory=list)
+
+    # Prior quarter management commitments (for S2e Credibility Tracker)
+    prior_quarter_summaries: list[PriorQuarterSummary] = Field(default_factory=list)
+
+    # Peer company summaries (for S2f Competitive Intelligence)
+    peer_summaries: list[PeerSummary] = Field(default_factory=list)
+
+    # What data could not be fetched — agents are told to note gaps
+    missing_data: list[str] = Field(default_factory=list)
+    assembled_at: str = ""
+
+    def to_prompt_text(self) -> str:
+        """
+        Serialize the bundle into a compact, readable text block for injection
+        into agent prompts. Optimized for token efficiency (~1,500-3,000 tokens).
+        """
+        lines = ["=== CONTEXTUAL INTELLIGENCE BUNDLE ===",
+                 "NOTE: This data is EXTERNAL to the transcript. Claims derived",
+                 "solely from this bundle must be labeled 'interpretive'.", ""]
+
+        # --- Historical financials ---
+        if self.historical_financials:
+            lines.append("** Historical Financial Trend **")
+            lines.append(f"{'Quarter':<18} {'Revenue':<14} {'Rev YoY':<10} {'Op Margin':<12} {'EPS'}")
+            lines.append("-" * 68)
+            for q in self.historical_financials:
+                rev    = q.revenue or "—"
+                yoy    = q.revenue_yoy_pct or "—"
+                margin = q.operating_margin_pct or "—"
+                eps    = q.eps_diluted or "—"
+                lines.append(f"{q.quarter_label:<18} {rev:<14} {yoy:<10} {margin:<12} {eps}")
+            if self.trend_narrative:
+                lines.append(f"\nTrend: {self.trend_narrative}")
+            lines.append("")
+
+        # --- Stock reaction ---
+        if self.stock_reaction and self.stock_reaction.reaction_pct is not None:
+            sr = self.stock_reaction
+            lines.append("** Market Reaction to Earnings **")
+            if sr.price_day_before:
+                lines.append(f"Pre-earnings price:  ${sr.price_day_before:.2f}")
+            if sr.price_day_after:
+                lines.append(f"Post-earnings price: ${sr.price_day_after:.2f}")
+            sign = "+" if sr.reaction_pct >= 0 else ""
+            lines.append(f"Stock reaction:      {sign}{sr.reaction_pct:.1f}% ({sr.reaction_label})")
+            lines.append("")
+
+        # --- Consensus estimates ---
+        if self.consensus_estimates:
+            lines.append("** Consensus vs. Actuals **")
+            for est in self.consensus_estimates:
+                parts = [f"{est.metric}: Est {est.estimate or '?'} → Actual {est.actual or '?'}"]
+                if est.surprise_pct:
+                    parts.append(f"-> {est.verdict or ''} ({est.surprise_pct})")
+                lines.append("  " + " ".join(parts))
+            lines.append("")
+
+        # --- Prior quarter commitments ---
+        if self.prior_quarter_summaries:
+            lines.append("** Prior Quarter Commitments & Results **")
+            for pqs in self.prior_quarter_summaries:
+                lines.append(f"\n[{pqs.quarter_label}]")
+                lines.append(f"Results: {pqs.key_results}")
+                if pqs.forward_commitments:
+                    lines.append("Forward commitments made:")
+                    for i, c in enumerate(pqs.forward_commitments, 1):
+                        lines.append(f"  {i}. {c}")
+            lines.append("")
+
+        # --- Peer summaries ---
+        if self.peer_summaries:
+            lines.append("** Peer Company Performance (Same Quarter) **")
+            for peer in self.peer_summaries:
+                lines.append(f"\n[{peer.ticker} — {peer.company_name}, {peer.quarter_label}]")
+                for m in peer.key_metrics:
+                    lines.append(f"  • {m}")
+                if peer.key_themes:
+                    lines.append(f"  Themes: {'; '.join(peer.key_themes)}")
+            lines.append("")
+
+        # --- Missing data note ---
+        if self.missing_data:
+            lines.append("** Data Gaps **")
+            for gap in self.missing_data:
+                lines.append(f"  • {gap}")
+            lines.append("")
+
+        lines.append("=== END OF CONTEXT BUNDLE ===")
+        return "\n".join(lines)
