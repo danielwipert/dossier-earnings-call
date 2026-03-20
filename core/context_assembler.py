@@ -36,6 +36,7 @@ from core.schemas import (
     ContextBundle, QuarterlySnapshot, StockReactionData,
     ConsensusEstimate, PriorQuarterSummary, PeerSummary
 )
+from core.prompts import company_profile_prompt
 
 
 # =============================================================================
@@ -62,6 +63,15 @@ def assemble_context(
     peer_tickers = [p.upper() for p in (peer_tickers or [])]
     missing_data = []
 
+    # Resolve company name from yfinance if not provided
+    if not company_name:
+        try:
+            import yfinance as yf
+            info = yf.Ticker(ticker).info
+            company_name = info.get("longName") or info.get("shortName") or ticker
+        except Exception:
+            company_name = ticker
+
     print(f"\nS0: Context Assembly for {ticker} Q{quarter} {year}...")
 
     # -------------------------------------------------------------------------
@@ -84,7 +94,30 @@ def assemble_context(
         print(f"  ! yfinance failed: {e}")
 
     # -------------------------------------------------------------------------
-    # 2. EPS consensus estimates (Alpha Vantage — optional)
+    # 2. Company profile (LLM-generated — runs after yfinance so it can use
+    #    the financial history as grounding for the narrative)
+    # -------------------------------------------------------------------------
+    company_profile = ""
+
+    if call_model_fn and generation_model:
+        try:
+            company_profile = _generate_company_profile(
+                ticker=ticker,
+                company_name=company_name or ticker,
+                current_quarter=f"Q{quarter} {year}",
+                historical_financials=historical_financials,
+                call_model_fn=call_model_fn,
+                generation_model=generation_model,
+            )
+            print(f"  ✓ Company profile generated ({len(company_profile)} chars)")
+        except Exception as e:
+            missing_data.append(f"Company profile: LLM generation failed — {e}")
+            print(f"  ! Company profile failed: {e}")
+    else:
+        missing_data.append("Company profile: no LLM available")
+
+    # -------------------------------------------------------------------------
+    # 3. EPS consensus estimates (Alpha Vantage — optional)
     # -------------------------------------------------------------------------
     consensus_estimates = []
     av_key = os.getenv("ALPHA_VANTAGE_API_KEY")
@@ -130,32 +163,41 @@ def assemble_context(
         missing_data.append("Prior quarter summaries: no LLM available for summarization")
 
     # -------------------------------------------------------------------------
-    # 4. Peer transcript summaries (EDGAR — only if peer_tickers provided)
+    # 4. Peer summaries — auto-identified via Finnhub, financial data via yfinance
     # -------------------------------------------------------------------------
     peer_summaries = []
 
-    if peer_tickers and call_model_fn and generation_model:
-        print(f"  Fetching peer summaries: {peer_tickers}")
+    # Auto-identify peers if none were manually specified
+    if not peer_tickers:
+        peer_tickers = _auto_identify_peers(ticker)
+        if peer_tickers:
+            print(f"  Auto-identified peers: {peer_tickers}")
+
+    if peer_tickers:
+        print(f"  Fetching peer financial data: {peer_tickers}")
         for peer_ticker in peer_tickers:
             try:
-                summary = _fetch_and_summarize_peer(
-                    peer_ticker, year, quarter, call_model_fn, generation_model, source
-                )
-                peer_summaries.append(summary)
-                print(f"  ✓ Peer {peer_ticker}: summarized ({summary.source})")
+                # Try transcript-based summary first (works with FMP paid key)
+                transcript_summary = None
+                if call_model_fn and generation_model:
+                    try:
+                        transcript_summary = _fetch_and_summarize_peer(
+                            peer_ticker, year, quarter, call_model_fn, generation_model, source
+                        )
+                        print(f"  ✓ Peer {peer_ticker}: transcript summarized ({transcript_summary.source})")
+                    except Exception:
+                        pass  # Fall through to yfinance
+
+                if transcript_summary:
+                    peer_summaries.append(transcript_summary)
+                else:
+                    # Always-available fallback: yfinance financial benchmarking
+                    fin_summary = _fetch_peer_financials(peer_ticker)
+                    peer_summaries.append(fin_summary)
+                    print(f"  ✓ Peer {peer_ticker}: financial data (yfinance)")
             except Exception as e:
-                peer_summaries.append(PeerSummary(
-                    ticker=peer_ticker,
-                    company_name=peer_ticker,
-                    quarter_label=f"Q{quarter} {year}",
-                    key_metrics=[],
-                    key_themes=[f"Data unavailable: {type(e).__name__}"],
-                    source="unavailable"
-                ))
                 missing_data.append(f"Peer {peer_ticker}: {type(e).__name__} — {e}")
                 print(f"  ! Peer {peer_ticker} failed: {type(e).__name__}")
-    elif peer_tickers:
-        missing_data.append(f"Peer summaries: no LLM available for peers {peer_tickers}")
 
     # -------------------------------------------------------------------------
     # Assemble bundle
@@ -164,6 +206,7 @@ def assemble_context(
         ticker=ticker,
         company_name=company_name,
         current_quarter=f"Q{quarter} {year}",
+        company_profile=company_profile,
         historical_financials=historical_financials,
         trend_narrative=trend_narrative,
         stock_reaction=stock_reaction,
@@ -175,12 +218,13 @@ def assemble_context(
     )
 
     success_count = (
+        (1 if company_profile else 0) +
         (1 if historical_financials else 0) +
         (1 if consensus_estimates else 0) +
         (1 if prior_quarter_summaries else 0) +
         (1 if peer_summaries else 0)
     )
-    print(f"  ✓ Context bundle assembled ({success_count}/4 data sources, {len(missing_data)} gaps)")
+    print(f"  ✓ Context bundle assembled ({success_count}/5 data sources, {len(missing_data)} gaps)")
     return bundle
 
 
@@ -278,7 +322,7 @@ def _fetch_yfinance_data(
             eps_diluted=_fmt_eps(eps),
         ))
 
-        if len(snapshots) >= 4:
+        if len(snapshots) >= 8:
             break
 
     # Reverse so oldest is first (better trend readability)
@@ -426,7 +470,58 @@ def _compute_trend_narrative(snapshots: list[QuarterlySnapshot]) -> str:
 
 
 # =============================================================================
-# SOURCE 2: ALPHA VANTAGE — EPS consensus estimates
+# SOURCE 2: LLM COMPANY PROFILE GENERATOR
+# =============================================================================
+
+def _generate_company_profile(
+    ticker: str,
+    company_name: str,
+    current_quarter: str,
+    historical_financials: list,
+    call_model_fn: Callable,
+    generation_model: str,
+) -> str:
+    """
+    Ask the LLM to write a concise 3-paragraph company profile covering
+    business model, historical arc, and current strategic situation.
+    The financial history is passed as grounding context.
+    """
+    # Format financial history as a readable table for the prompt
+    if historical_financials:
+        fin_lines = [f"{'Quarter':<14} {'Revenue':<12} {'Rev YoY':<10} {'Op Margin':<12} {'EPS'}"]
+        fin_lines.append("-" * 58)
+        for q in historical_financials:
+            fin_lines.append(
+                f"{q.quarter_label:<14} {q.revenue or '—':<12} "
+                f"{q.revenue_yoy_pct or '—':<10} {q.operating_margin_pct or '—':<12} "
+                f"{q.eps_diluted or '—'}"
+            )
+        financial_history_text = "\n".join(fin_lines)
+    else:
+        financial_history_text = "No financial history available."
+
+    prompt = company_profile_prompt(
+        ticker=ticker,
+        company_name=company_name,
+        current_quarter=current_quarter,
+        financial_history_text=financial_history_text,
+    )
+
+    raw = call_model_fn(prompt, generation_model, max_tokens=600)
+
+    # Strip any accidental JSON/markdown wrapping
+    text = raw.strip()
+    import re
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1]).strip()
+
+    return text
+
+
+# =============================================================================
+# SOURCE 3: ALPHA VANTAGE — EPS consensus estimates
 # =============================================================================
 
 def _fetch_alpha_vantage_earnings(
@@ -502,7 +597,7 @@ def _fetch_alpha_vantage_earnings(
 
 
 # =============================================================================
-# SOURCE 3: EDGAR — Prior quarter transcript summaries
+# SOURCE 4: EDGAR — Prior quarter transcript summaries
 # =============================================================================
 
 def _fetch_and_summarize_prior_quarter(
@@ -587,7 +682,7 @@ Respond with ONLY a JSON object. No preamble, no markdown fences.
 
 
 # =============================================================================
-# SOURCE 4: EDGAR — Peer transcript summaries
+# SOURCE 5: EDGAR — Peer transcript summaries
 # =============================================================================
 
 def _fetch_and_summarize_peer(
@@ -672,6 +767,137 @@ Respond with ONLY a JSON object. No preamble, no markdown fences.
     "Theme two in 5-12 words"
   ]
 }}"""
+
+
+# =============================================================================
+# AUTO PEER IDENTIFICATION (Finnhub free tier)
+# =============================================================================
+
+def _auto_identify_peers(ticker: str, max_peers: int = 4) -> list[str]:
+    """
+    Auto-identify peer tickers using Finnhub's free /stock/peers endpoint.
+    Finnhub returns peers in relevance order — take the first N directly.
+    Returns empty list if FINNHUB_API_KEY is not set or request fails.
+    """
+    finnhub_key = os.getenv("FINNHUB_API_KEY")
+    if not finnhub_key:
+        return []
+
+    try:
+        import requests as req_lib
+
+        resp = req_lib.get(
+            "https://finnhub.io/api/v1/stock/peers",
+            params={"symbol": ticker, "token": finnhub_key},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return []
+
+        # Finnhub returns an HTML page (not JSON) for paywalled endpoints.
+        # Detect this and bail early.
+        content_type = resp.headers.get("content-type", "")
+        if "html" in content_type or resp.text.strip().startswith("<"):
+            return []
+
+        peers = resp.json()
+        if not isinstance(peers, list):
+            return []
+
+        # Remove the subject company itself; Finnhub returns peers in relevance order
+        peers = [p for p in peers if p.upper() != ticker.upper()]
+        return peers[:max_peers]
+
+    except Exception:
+        return []
+
+
+# =============================================================================
+# PEER FINANCIAL BENCHMARKING (yfinance — always free)
+# =============================================================================
+
+def _fetch_peer_financials(peer_ticker: str) -> PeerSummary:
+    """
+    Fetch a peer company's most recent quarterly financials from yfinance.
+    Returns a PeerSummary with key_metrics populated from real financial data.
+    No transcript required — purely financial benchmarking.
+    """
+    import yfinance as yf
+
+    t = yf.Ticker(peer_ticker)
+    info = t.info
+    company_name = info.get("longName") or info.get("shortName") or peer_ticker
+
+    income = t.quarterly_income_stmt
+    if income is None or income.empty:
+        raise ValueError(f"No quarterly income statement available for {peer_ticker}")
+
+    income = income.sort_index(axis=1, ascending=False)
+    latest_col = income.columns[0]
+    latest_date = latest_col.date() if hasattr(latest_col, "date") else latest_col
+    quarter_label = _date_to_quarter_label(latest_date)
+
+    # Core metrics
+    revenue    = _safe_row(income, latest_col, ["Total Revenue", "Revenue", "TotalRevenue"])
+    op_income  = _safe_row(income, latest_col, ["Operating Income", "OperatingIncome", "EBIT"])
+    gross_profit = _safe_row(income, latest_col, ["Gross Profit", "GrossProfit"])
+    net_income = _safe_row(income, latest_col, ["Net Income", "NetIncome", "Net Income Common Stockholders"])
+    eps        = _safe_row(income, latest_col, ["Diluted EPS", "Basic EPS", "EPS Diluted"])
+
+    # YoY revenue growth
+    revenue_yoy_str = None
+    prior_year_col = _find_same_quarter_prior_year(income.columns, latest_date)
+    if prior_year_col is not None:
+        prior_rev = _safe_row(income, prior_year_col, ["Total Revenue", "Revenue", "TotalRevenue"])
+        if revenue and prior_rev:
+            try:
+                yoy_pct = ((float(revenue) - float(prior_rev)) / abs(float(prior_rev))) * 100
+                sign = "+" if yoy_pct >= 0 else ""
+                revenue_yoy_str = f"{sign}{yoy_pct:.1f}%"
+            except Exception:
+                pass
+
+    key_metrics = []
+
+    if revenue:
+        rev_str = _fmt_millions(float(revenue))
+        metric = f"Revenue: {rev_str}"
+        if revenue_yoy_str:
+            metric += f" ({revenue_yoy_str} YoY)"
+        key_metrics.append(metric)
+
+    if revenue and op_income:
+        try:
+            op_pct = (float(op_income) / float(revenue)) * 100
+            key_metrics.append(f"Operating margin: {op_pct:.1f}%")
+        except Exception:
+            pass
+
+    if revenue and gross_profit:
+        try:
+            gp_pct = (float(gross_profit) / float(revenue)) * 100
+            key_metrics.append(f"Gross margin: {gp_pct:.1f}%")
+        except Exception:
+            pass
+
+    if eps:
+        try:
+            key_metrics.append(f"EPS (diluted): ${float(eps):.2f}")
+        except Exception:
+            pass
+
+    cap = info.get("marketCap")
+    if cap:
+        key_metrics.append(f"Market cap: {_fmt_millions(float(cap))}")
+
+    return PeerSummary(
+        ticker=peer_ticker,
+        company_name=company_name,
+        quarter_label=quarter_label,
+        key_metrics=key_metrics,
+        key_themes=["Financial benchmarking data — earnings call transcript not available"],
+        source="yfinance",
+    )
 
 
 # =============================================================================

@@ -35,8 +35,6 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from generate_radar_chart import generate_radar_chart, DIMENSION_KEYS
-from generate_trend_chart import generate_trend_chart
 
 
 def _convert_to_pdf(docx_path: str, pdf_path: str) -> str:
@@ -86,7 +84,6 @@ def format_report(
     # The pipeline wraps report content under a "report" key
     _report = report_data.get("report", report_data)
     snapshot = _report.get("snapshot", {})
-    radar_scores = _report.get("radar_scores", {})
 
     # Auto-generate output filename if not provided
     if not output_path:
@@ -101,127 +98,72 @@ def format_report(
     print(f"Output:            {output_path}")
 
     # -------------------------------------------------------------------------
-    # Step 1: Generate radar chart PNG
+    # Step 1: Write report data to a temp JSON for the JS formatter
     # -------------------------------------------------------------------------
-    print("\nStep 1: Generating radar chart...")
+    print("\nStep 1: Building Word document...")
 
-    # Extract current quarter scores
-    current_scores = {}
-    if radar_scores.get("dimension_scores"):
-        for d in radar_scores["dimension_scores"]:
-            current_scores[d["dimension"]] = d["published_score"]
+    report = report_data.get("report", report_data)
+    context_bundle = report.get("context_bundle")
 
-    # Quarter labels
-    quarter_label = snapshot.get("quarter", "Current Quarter")
+    formatter_input = {
+        "snapshot":       report.get("snapshot", {}),
+        "editorial":      report.get("editorial"),
+        "econ_expert":    report.get("econ_expert"),
+        "sections":       report.get("sections", {}),
+        "context_bundle": context_bundle,
+        "verification":   report.get("verification", {}),
+    }
 
-    # Generate chart to a temp file
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        chart_path = tmp.name
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    ) as tmp_json:
+        json.dump(formatter_input, tmp_json, indent=2)
+        formatter_json_path = tmp_json.name
+
+    # Find format_report.js (same directory as this script)
+    script_dir = Path(__file__).parent
+    js_formatter = script_dir / "format_report.js"
+
+    if not js_formatter.exists():
+        raise FileNotFoundError(
+            f"format_report.js not found at {js_formatter}. "
+            "Make sure format_report.js is in the same folder as report_formatter.py."
+        )
+
+    # Write to a temp .docx first, then convert to PDF
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_docx:
+        temp_docx_path = tmp_docx.name
 
     try:
-        generate_radar_chart(
-            scores=current_scores,
-            output_path=chart_path,
-            quarter_label=quarter_label,
+        result = subprocess.run(
+            [
+                "node", str(js_formatter),
+                formatter_json_path,
+                temp_docx_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60
         )
-        print(f"  ✓ Radar chart saved to temp file")
 
-        # -------------------------------------------------------------------------
-        # Step 2: Generate trend chart (historical financials) if context available
-        # -------------------------------------------------------------------------
-        trend_chart_path = None
-        report = report_data.get("report", report_data)
-        context_bundle = report.get("context_bundle")
-
-        if context_bundle and context_bundle.get("historical_financials"):
-            print("\nStep 2: Generating trend chart...")
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_trend:
-                trend_chart_path = tmp_trend.name
-            try:
-                generate_trend_chart(
-                    historical_financials=context_bundle["historical_financials"],
-                    output_path=trend_chart_path,
-                    company_name=context_bundle.get("company_name", ""),
-                )
-                print(f"  ✓ Trend chart saved to temp file")
-            except Exception as e:
-                print(f"  ! Trend chart failed (non-blocking): {e}")
-                trend_chart_path = None
-        else:
-            print("\nStep 2: Skipping trend chart (no historical data)")
-
-        # -------------------------------------------------------------------------
-        # Step 3: Write the report data to a temp JSON for the JS formatter
-        # The formatter needs only the report's inner data, not the full wrapper
-        # -------------------------------------------------------------------------
-        print("\nStep 3: Building Word document...")
-
-        formatter_input = {
-            "snapshot":       report.get("snapshot", {}),
-            "editorial":      report.get("editorial"),
-            "sections":       report.get("sections", {}),
-            "radar_scores":   report.get("radar_scores", {}),
-            "context_bundle": context_bundle,
-            "verification":   report.get("verification", {}),
-        }
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False, encoding="utf-8"
-        ) as tmp_json:
-            json.dump(formatter_input, tmp_json, indent=2)
-            formatter_json_path = tmp_json.name
-
-        # Find format_report.js (same directory as this script)
-        script_dir = Path(__file__).parent
-        js_formatter = script_dir / "format_report.js"
-
-        if not js_formatter.exists():
-            raise FileNotFoundError(
-                f"format_report.js not found at {js_formatter}. "
-                "Make sure format_report.js is in the same folder as report_formatter.py."
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"format_report.js failed:\n{result.stderr}\n{result.stdout}"
             )
 
-        # Write to a temp .docx first, then convert to PDF
-        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_docx:
-            temp_docx_path = tmp_docx.name
+        print(f"  ✓ {result.stdout.strip()}")
 
-        try:
-            result = subprocess.run(
-                [
-                    "node", str(js_formatter),
-                    formatter_json_path,
-                    chart_path,
-                    temp_docx_path,
-                    trend_chart_path or "",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"format_report.js failed:\n{result.stderr}\n{result.stdout}"
-                )
-
-            print(f"  ✓ {result.stdout.strip()}")
-
-            # -------------------------------------------------------------------------
-            # Step 4: Convert DOCX → PDF
-            # -------------------------------------------------------------------------
-            print("\nStep 4: Converting to PDF...")
-            _convert_to_pdf(temp_docx_path, output_path)
-            print(f"  ✓ PDF saved: {output_path}")
-
-        finally:
-            if os.path.exists(temp_docx_path):
-                os.unlink(temp_docx_path)
-            os.unlink(formatter_json_path)
+        # -------------------------------------------------------------------------
+        # Step 2: Convert DOCX → PDF
+        # -------------------------------------------------------------------------
+        print("\nStep 2: Converting to PDF...")
+        _convert_to_pdf(temp_docx_path, output_path)
+        print(f"  ✓ PDF saved: {output_path}")
 
     finally:
-        os.unlink(chart_path)
-        if trend_chart_path and os.path.exists(trend_chart_path):
-            os.unlink(trend_chart_path)
+        if os.path.exists(temp_docx_path):
+            os.unlink(temp_docx_path)
+        os.unlink(formatter_json_path)
 
     # Confirm output exists
     final_path = Path(output_path)

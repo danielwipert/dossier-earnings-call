@@ -38,18 +38,19 @@ from formatter.report_formatter import format_report
 from core.transcript_fetcher import fetch_transcript, validate_transcript
 from core.schemas import (
     FactList, Fact, Gate1aResult, S1bOutput, S2SectionOutput,
-    Gate2Result, S3Output, DimensionScore, S5Output,
+    Gate2Result, S5Output,
     PipelineRunLog, DegradationLevel, FinalOutputStatus
 )
 from core.prompts import (
     s1a_fact_extractor, gate_1a_validator, s1b_structured_data_pull,
     s2a_narrative_analyst, s2b_signal_detector, s2c_gap_analyst,
     s2d_context_analyst, s2e_credibility_tracker, s2f_competitive_intelligence,
-    s6_editorial_synthesis, gate_2_fact_verifier, s3_radar_scorer,
-    s5_holistic_verifier, s3_rationale_retry
+    s6_editorial_synthesis, gate_2_fact_verifier,
+    s5_holistic_verifier
 )
 from core.context_assembler import assemble_context
 from core.schemas import ContextBundle
+from core.s7_econ_expert import run_s7
 
 load_dotenv()
 
@@ -138,19 +139,28 @@ def call_model(prompt: str, model_id: str, max_tokens: int = 4000) -> str:
         ) from e
 
 
+_VALID_JSON_ESCAPES = set('"\\\/bfnrtu')
+
 def _sanitize_control_chars(text: str) -> str:
     """
-    Escape literal control characters that appear inside JSON string values.
-    Models occasionally embed raw newlines/tabs inside string fields, which is
-    invalid JSON. This walks the text character-by-character, tracking whether
-    we're inside a quoted string, and escapes any bare control characters found there.
+    Fix two classes of invalid JSON inside string values:
+    1. Bare control characters (newlines, tabs) — escape them.
+    2. Invalid escape sequences (e.g. \' or \:) — double the backslash.
+    Walks character-by-character tracking quote/escape state.
     """
     result = []
     in_string = False
     escape_next = False
     escape_map = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
-    for c in text:
+    i = 0
+    chars = list(text)
+    while i < len(chars):
+        c = chars[i]
         if escape_next:
+            # We just saw a backslash — check if the escape is valid JSON
+            if c not in _VALID_JSON_ESCAPES:
+                # Invalid escape: double the backslash so \X becomes \\X
+                result.append('\\')
             result.append(c)
             escape_next = False
         elif c == '\\' and in_string:
@@ -163,6 +173,7 @@ def _sanitize_control_chars(text: str) -> str:
             result.append(escape_map.get(c, f'\\u{ord(c):04x}'))
         else:
             result.append(c)
+        i += 1
     return ''.join(result)
 
 
@@ -199,8 +210,8 @@ def parse_json_response(raw_response: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        # 4. Sanitize control characters inside strings and retry
-        if "control character" in str(e) or "Invalid" in str(e):
+        # 4. Sanitize control characters and invalid escapes inside strings, then retry
+        if "control character" in str(e) or "Invalid" in str(e) or "escape" in str(e).lower():
             sanitized = _sanitize_control_chars(text)
             try:
                 return json.loads(sanitized)
@@ -295,9 +306,12 @@ def run_s1a(transcript: str) -> FactList:
             seen_quotes.add(quote)
             deduped.append(fact)
 
-    # Renumber fact IDs sequentially
+    # Renumber fact IDs sequentially; normalize field name variants
     for i, fact in enumerate(deduped, 1):
         fact["fact_id"] = f"F{i:03d}"
+        # Some models output "type" instead of "fact_type" — normalize
+        if "fact_type" not in fact and "type" in fact:
+            fact["fact_type"] = fact.pop("type")
 
     factlist = FactList(
         facts=[Fact(**f) for f in deduped],
@@ -358,6 +372,63 @@ def run_gate_1a(transcript: str, factlist: FactList) -> Gate1aResult:
 # STAGE S1b: STRUCTURED DATA PULL
 # =============================================================================
 
+# Canonical mapping from display metric names → yfinance quarterly income-statement columns
+_YF_METRIC_MAP = {
+    "revenue":              "Total Revenue",
+    "total revenue":        "Total Revenue",
+    "net revenue":          "Total Revenue",
+    "net income":           "Net Income",
+    "operating income":     "Operating Income",
+    "ebit":                 "EBIT",
+    "gross profit":         "Gross Profit",
+    "ebitda":               "EBITDA",
+    "eps":                  "Basic EPS",
+    "basic eps":            "Basic EPS",
+    "diluted eps":          "Diluted EPS",
+}
+
+
+def _fill_yoy_from_yfinance(metrics: list, tk) -> None:
+    """
+    For any FinancialMetricRow with no yoy_change, attempt to compute one
+    from yfinance quarterly income statement (two most-recent quarters YoY).
+    Modifies the list in place.
+    """
+    try:
+        import yfinance as yf
+        import pandas as pd
+        qs = tk.quarterly_income_stmt
+        if qs is None or qs.empty:
+            return
+        # Columns are dates descending; we want the two most recent same-quarter pairs
+        cols = list(qs.columns)
+        if len(cols) < 5:
+            return
+        # Most recent quarter vs same quarter one year ago (index 0 vs index 4)
+        cur_col  = cols[0]
+        prev_col = cols[4]
+    except Exception:
+        return
+
+    for m in metrics:
+        if m.yoy_change:
+            continue
+        key = m.metric_name.lower().strip()
+        yf_col = _YF_METRIC_MAP.get(key)
+        if not yf_col or yf_col not in qs.index:
+            continue
+        try:
+            cur  = float(qs.at[yf_col, cur_col])
+            prev = float(qs.at[yf_col, prev_col])
+            if prev == 0:
+                continue
+            pct = (cur - prev) / abs(prev) * 100
+            sign = "+" if pct >= 0 else ""
+            m.yoy_change = f"{sign}{pct:.1f}%"
+        except Exception:
+            continue
+
+
 def run_s1b(factlist: FactList) -> S1bOutput:
     """
     Run the Structured Data Pull. Returns financial tables for Section 1.
@@ -377,7 +448,27 @@ def run_s1b(factlist: FactList) -> S1bOutput:
             row["source_fact_ids"] = []
 
     result = S1bOutput(**data)
-    
+
+    # Override sector with authoritative yfinance GICS classification
+    # (LLM sometimes misclassifies, e.g. MCD as "Consumer Staples" instead of "Consumer Discretionary")
+    try:
+        import yfinance as yf
+        raw_ticker = result.ticker.split()[0].split("(")[0].strip()
+        tk = yf.Ticker(raw_ticker)
+        yf_sector = tk.info.get("sector", "")
+        if yf_sector:
+            result = result.model_copy(update={"sector": yf_sector})
+    except Exception:
+        tk = None
+
+    # yfinance fallback: fill missing yoy_change from quarterly income statement
+    try:
+        missing = [m for m in result.key_financials if not m.yoy_change]
+        if missing and tk is not None:
+            _fill_yoy_from_yfinance(result.key_financials, tk)
+    except Exception:
+        pass
+
     print(f"  ✓ S1b complete: {len(result.key_financials)} metrics, {len(result.key_takeaways)} takeaways")
     return result
 
@@ -697,113 +788,6 @@ def run_s6(
 # Two models score independently. Adjudicates disagreements.
 # =============================================================================
 
-def run_s3(factlist: FactList, verified_sections: dict[str, S2SectionOutput]) -> S3Output:
-    """
-    Score the company on 7 dimensions using two independent models.
-    Adjudicates disagreements > 3 points.
-    """
-    print("  Running S3: Radar Scorer (two independent models)...")
-    
-    factlist_json = factlist.model_dump_json(indent=2)
-    sections_json = json.dumps({k: json.loads(v.model_dump_json()) for k, v in verified_sections.items()}, indent=2)
-    
-    # Model A scores
-    prompt_a = s3_radar_scorer(factlist_json, sections_json, model_role="model_a")
-    raw_a = call_model(prompt_a, SCORING_MODEL_A, max_tokens=5000)
-    data_a = parse_json_response(raw_a)
-
-    # Model B scores independently
-    prompt_b = s3_radar_scorer(factlist_json, sections_json, model_role="model_b")
-    raw_b = call_model(prompt_b, SCORING_MODEL_B, max_tokens=5000)
-    data_b = parse_json_response(raw_b)
-    
-    # All 7 expected dimensions — we iterate over these, not over whatever a model returned.
-    # This makes scoring robust: a model that truncates or skips a dimension gets filled
-    # from the other model rather than silently dropping the dimension.
-    ALL_DIMENSIONS = [
-        "revenue_momentum", "margin_health", "guidance_confidence", "mgmt_transparency",
-        "strategic_clarity", "earnings_quality", "forward_visibility",
-    ]
-
-    # Build per-dimension lookup from both models
-    scores_a    = {d["dimension"]: max(1, min(10, d["score_model_a"])) for d in data_a.get("dimension_scores", [])}
-    scores_b    = {d["dimension"]: max(1, min(10, d["score_model_a"])) for d in data_b.get("dimension_scores", [])}
-    rationales_a = {d["dimension"]: d.get("scoring_rationale", "") for d in data_a.get("dimension_scores", [])}
-    rationales_b = {d["dimension"]: d.get("scoring_rationale", "") for d in data_b.get("dimension_scores", [])}
-    facts_a      = {d["dimension"]: d.get("supporting_fact_ids", []) for d in data_a.get("dimension_scores", [])}
-
-    final_scores = []
-    for dimension in ALL_DIMENSIONS:
-        # Fall back to the other model's score if one is missing
-        score_a = scores_a.get(dimension) or scores_b.get(dimension, 5)
-        score_b = scores_b.get(dimension) or scores_a.get(dimension, 5)
-
-        diff = abs(score_a - score_b)
-        agreed = diff <= 3
-        published = round((score_a + score_b) / 2)
-
-        if not agreed:
-            note = f"Model A scored {score_a}, Model B scored {score_b}. Published score {published} is adjudicated midpoint."
-            print(f"    ! Score disagreement on {dimension}: {score_a} vs {score_b} → adjudicated to {published}")
-        else:
-            note = None
-
-        # Prefer Model B's rationale (Llama 3.3 70B — stronger and less prompt-contaminated)
-        rationale = rationales_b.get(dimension) or rationales_a.get(dimension, "")
-
-        final_scores.append(DimensionScore(
-            dimension=dimension,
-            score_model_a=score_a,
-            score_model_b=score_b,
-            published_score=published,
-            models_agreed=agreed,
-            disagreement_note=note,
-            supporting_fact_ids=facts_a.get(dimension, []),
-            scoring_rationale=rationale
-        ))
-
-    # Retry any dimension that ended up with an empty rationale.
-    # This happens when both models truncate or ignore the rationale field despite
-    # being instructed not to. A targeted single-dimension call recovers the rationale.
-    for i, ds in enumerate(final_scores):
-        if not ds.scoring_rationale or len(ds.scoring_rationale.strip()) < 10:
-            print(f"    ! Empty rationale for {ds.dimension} — retrying with targeted prompt...")
-            retry_prompt = s3_rationale_retry(
-                dimension=ds.dimension,
-                score=ds.published_score,
-                factlist_json=factlist_json,
-                verified_sections_json=sections_json,
-            )
-            try:
-                raw_retry = call_model(retry_prompt, SCORING_MODEL_B, max_tokens=400)
-                retry_data = parse_json_response(raw_retry)
-                recovered = (retry_data.get("rationale") or "").strip()
-                if len(recovered) > 10:
-                    final_scores[i] = DimensionScore(
-                        dimension=ds.dimension,
-                        score_model_a=ds.score_model_a,
-                        score_model_b=ds.score_model_b,
-                        published_score=ds.published_score,
-                        models_agreed=ds.models_agreed,
-                        disagreement_note=ds.disagreement_note,
-                        supporting_fact_ids=ds.supporting_fact_ids,
-                        scoring_rationale=recovered,
-                    )
-                    print(f"    ✓ Rationale recovered for {ds.dimension}")
-                else:
-                    print(f"    ! Rationale retry also returned empty for {ds.dimension} — leaving blank")
-            except Exception as e:
-                print(f"    ! Rationale retry failed for {ds.dimension}: {e}")
-
-    result = S3Output(
-        dimension_scores=final_scores,
-        scoring_model_a=SCORING_MODEL_A,
-        scoring_model_b=SCORING_MODEL_B
-    )
-
-    print(f"  ✓ S3 complete: {len(final_scores)} dimensions scored")
-    return result
-
 
 # =============================================================================
 # STAGE S5: HOLISTIC VERIFIER
@@ -812,7 +796,6 @@ def run_s3(factlist: FactList, verified_sections: dict[str, S2SectionOutput]) ->
 def run_s5(
     s1b: S1bOutput,
     verified_sections: dict[str, S2SectionOutput],
-    s3: S3Output
 ) -> S5Output:
     """
     Run the Holistic Verifier across the complete assembled report.
@@ -824,7 +807,6 @@ def run_s5(
     full_report = {
         "snapshot": json.loads(s1b.model_dump_json()),
         "sections": {k: json.loads(v.model_dump_json()) for k, v in verified_sections.items()},
-        "radar_scores": json.loads(s3.model_dump_json())
     }
     full_report_json = json.dumps(full_report, indent=2)
     
@@ -1070,20 +1052,13 @@ def run_pipeline(
         print(f"  ! S6 editorial synthesis failed (non-blocking): {e}")
 
     # -------------------------------------------------------------------------
-    # STAGE S3: RADAR SCORING
-    # -------------------------------------------------------------------------
-    print("\nSTAGE 5: Radar Scoring")
-    s3_output = run_s3(factlist, verified_sections)
-    
-    # -------------------------------------------------------------------------
     # STAGE S5: HOLISTIC VERIFICATION (includes S6 in review scope)
     # -------------------------------------------------------------------------
-    print("\nSTAGE 6: Holistic Verification")
-    # Include S6 in sections passed to S5 for investment advice scanning
+    print("\nSTAGE 5: Holistic Verification")
     all_sections_for_s5 = dict(verified_sections)
     if s6_output:
         all_sections_for_s5["S6"] = s6_output
-    s5_output = run_s5(s1b_output, all_sections_for_s5, s3_output)
+    s5_output = run_s5(s1b_output, all_sections_for_s5)
     
     if not s5_output.passed:
         if s5_output.safety_flags:
@@ -1097,7 +1072,7 @@ def run_pipeline(
                 section_grounding_scores, section_contradiction_counts, retry_counts,
                 DegradationLevel.PIPELINE_HALT, elapsed,
                 FinalOutputStatus.HALTED, omitted_sections, safety_flags_triggered,
-                s1b_output=s1b_output, s3_output=s3_output,
+                s1b_output=s1b_output,
             )
             return {
                 "status": "halted",
@@ -1112,6 +1087,31 @@ def run_pipeline(
             degradation_level = max(degradation_level, DegradationLevel.PARTIAL_OUTPUT)
     
     # -------------------------------------------------------------------------
+    # STAGE S7: ECON EXPERT (runs after S5, before report assembly)
+    # Reads the verified report text, retrieves textbook passages via FAISS,
+    # and writes "The Econ Expert's Take". Degrades gracefully if index absent.
+    # -------------------------------------------------------------------------
+    print("\nSTAGE 7: Econ Expert's Take")
+    s7_output = None
+    try:
+        # Assemble the report text S7 will read: editorial + all verified sections
+        report_text_parts = []
+        if s6_output:
+            report_text_parts.append(f"EDITORIAL COMMENTARY:\n{s6_output.narrative}")
+        for sec_id, sec in verified_sections.items():
+            report_text_parts.append(f"{sec.section_title.upper()}:\n{sec.narrative}")
+        report_text_for_s7 = "\n\n---\n\n".join(report_text_parts)
+
+        s7_output = run_s7(
+            report_text=report_text_for_s7,
+            call_model_fn=call_model,
+            parse_json_fn=parse_json_response,
+            generation_model=GENERATION_MODEL,
+        )
+    except Exception as e:
+        print(f"  ! S7 econ expert failed (non-blocking): {e}")
+
+    # -------------------------------------------------------------------------
     # ASSEMBLE FINAL REPORT
     # -------------------------------------------------------------------------
     elapsed = time.time() - start_time
@@ -1124,7 +1124,7 @@ def run_pipeline(
         section_grounding_scores, section_contradiction_counts, retry_counts,
         degradation_level, elapsed,
         final_status, omitted_sections, safety_flags_triggered,
-        s1b_output=s1b_output, s3_output=s3_output,
+        s1b_output=s1b_output,
     )
     
     report = {
@@ -1132,8 +1132,8 @@ def run_pipeline(
         "status": final_status.value,
         "snapshot": json.loads(s1b_output.model_dump_json()),
         "editorial": json.loads(s6_output.model_dump_json()) if s6_output else None,
+        "econ_expert": json.loads(s7_output.model_dump_json()) if s7_output else None,
         "sections": {k: json.loads(v.model_dump_json()) for k, v in verified_sections.items()},
-        "radar_scores": json.loads(s3_output.model_dump_json()),
         "context_bundle": json.loads(context_bundle.model_dump_json()) if context_bundle else None,
         "verification": {
             "source_grounding_scores": section_grounding_scores,
@@ -1181,7 +1181,6 @@ def _build_run_log(
     omitted_sections: list,
     safety_flags: list,
     s1b_output: Optional[S1bOutput] = None,
-    s3_output: Optional[S3Output] = None,
 ) -> PipelineRunLog:
     """Build the observability log for this pipeline run."""
 
@@ -1195,12 +1194,6 @@ def _build_run_log(
     company_ticker = s1b_output.ticker if s1b_output else "unknown"
     quarter        = s1b_output.quarter if s1b_output else "unknown"
 
-    # Pull model agreement per dimension from S3 when available
-    radar_agreement = (
-        {d.dimension: d.models_agreed for d in s3_output.dimension_scores}
-        if s3_output else {}
-    )
-
     return PipelineRunLog(
         run_id=run_id,
         company_ticker=company_ticker,
@@ -1212,7 +1205,7 @@ def _build_run_log(
         per_section_grounding_score=section_grounding,
         per_section_contradiction_count=section_contradictions,
         retry_count_per_section=retry_counts,
-        radar_score_agreement=radar_agreement,
+        radar_score_agreement={},
         degradation_level_reached=degradation_level,
         total_tokens_consumed=0,   # Would need token counting per call to populate
         total_latency_seconds=elapsed,

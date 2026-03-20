@@ -117,7 +117,7 @@ function scoreBar(score) {
 // Skips the lead paragraph; prefers sentences with numbers/financial language
 function extractPullQuote(narrative, minLen = 90, maxLen = 400) {
   const cleaned = stripCitations(narrative || "").replace(/\*\*/g, "");
-  const paras = cleaned.split(/\n\n+/).slice(1); // skip lead para
+  const paras = cleaned.split(/\n+/).slice(1); // skip lead para
   const body  = paras.join(" ");
   // Protect decimal points (e.g. $6.5, 43.2%) so they don't split sentences
   const protected_ = body.replace(/(\d)\.(\d)/g, "$1\x01$2");
@@ -136,6 +136,31 @@ function extractPullQuote(narrative, minLen = 90, maxLen = 400) {
   });
   return best;
 }
+
+// Break a long paragraph (>600 chars) into smaller ones at sentence boundaries.
+// Prevents walls of text when the LLM returns dense single-paragraph blocks.
+function breakLongParagraph(text, maxChars = 600) {
+  if (text.length <= maxChars) return [text];
+
+  // Protect decimal numbers so they don't get split at the period
+  const protected_ = text.replace(/(\d)\.(\d)/g, "$1\x01$2");
+  const sentences = protected_.match(/[^.!?]+[.!?]+[\s"]*/g) || [text];
+  const restored = sentences.map(s => s.replace(/\x01/g, ".").trim()).filter(Boolean);
+
+  const chunks = [];
+  let current = "";
+  for (const s of restored) {
+    if (current.length + s.length > maxChars && current.length > 0) {
+      chunks.push(current.trim());
+      current = s;
+    } else {
+      current += (current ? " " : "") + s;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.length ? chunks : [text];
+}
+
 
 // Render a magazine-style pull quote with decorative quote marks and accent rules
 function buildPullQuote(text, accentColor) {
@@ -351,8 +376,7 @@ function buildHeadline(snapshot, verificationSummary) {
     run("✓ AI-VERIFIED", { size: 16, bold: true, color: GREEN, font: "Arial" }),
     run(
       `   ·   ${verificationSummary.avg_grounding} source grounding` +
-      `   ·   ${verificationSummary.contradictions} contradictions detected` +
-      `   ·   Model agreement: ${verificationSummary.model_agreement}`,
+      `   ·   ${verificationSummary.contradictions} contradictions detected`,
       { size: 16, color: MID_GRAY, font: "Arial" }
     ),
   ], { spaceAfter: 160 }));
@@ -517,16 +541,19 @@ function buildSignals(sections) {
   const greenItems = [];
   const redItems   = [];
 
+  // Green flags: S2b claims explicitly tagged positive (fallback: grounded/derived if no valence data)
   if (sections.S2b) {
-    sections.S2b.claims
-      .filter(c => c.claim_type === "grounded" || c.claim_type === "derived")
-      .slice(0, 4)
-      .forEach(c => greenItems.push(stripCitations(c.claim_text)));
+    const tagged = sections.S2b.claims.filter(c => c.signal_valence === "positive");
+    const source = tagged.length > 0
+      ? tagged
+      : sections.S2b.claims.filter(c => c.claim_type === "grounded" || c.claim_type === "derived");
+    source.slice(0, 4).forEach(c => greenItems.push(stripCitations(c.claim_text)));
   }
+  // Watch points: S2c claims explicitly tagged negative (all S2c claims should be, but filter as safety net)
   if (sections.S2c) {
-    sections.S2c.claims
-      .slice(0, 4)
-      .forEach(c => redItems.push(stripCitations(c.claim_text)));
+    const tagged = sections.S2c.claims.filter(c => c.signal_valence === "negative");
+    const source = tagged.length > 0 ? tagged : sections.S2c.claims;
+    source.slice(0, 4).forEach(c => redItems.push(stripCitations(c.claim_text)));
   }
 
   const maxRows = Math.max(greenItems.length, redItems.length, 1);
@@ -664,11 +691,111 @@ function buildScorecard(radarScores, chartPngPath) {
 }
 
 // =============================================================================
+// S2b TWO-COLUMN CARD GRID
+// Renders S2b as a clean 2×2 grid of cards: coloured header bar + body text.
+// Each of the 4 mandatory subheadings gets its own card.
+// =============================================================================
+function renderS2bColumns(elements, processedParas, accent, accentBg) {
+  // ---- Group into {heading, paras[]} blocks ----
+  const blocks = [];
+  let curr = { heading: null, paras: [] };
+  processedParas.forEach(p => {
+    const hm = p.match(/^\*\*([^*]+)\*\*\s*$/);
+    if (hm) {
+      if (curr.heading !== null || curr.paras.length > 0) blocks.push(curr);
+      curr = { heading: hm[1], paras: [] };
+    } else {
+      curr.paras.push(p);
+    }
+  });
+  if (curr.heading !== null || curr.paras.length > 0) blocks.push(curr);
+
+  // Intro text (before first subheading) rendered full-width, then discard
+  const introBlock = blocks[0] && blocks[0].heading === null ? blocks.shift() : null;
+  if (introBlock && introBlock.paras.length > 0) {
+    const introText = introBlock.paras.join(" ").replace(/\*\*/g, "");
+    elements.push(new Paragraph({
+      children: [new TextRun({ text: introText, font: "Calibri", size: 22, color: CHARCOAL })],
+      spacing: { before: 0, after: 200, line: 320 },
+    }));
+  }
+
+  // Helper: render one block's body paras as TextRun array for a cell
+  function bodyRuns(block) {
+    return block.paras.map(p => {
+      const parts = p.replace(/\*\*/g, "").split(/(\d+\.?\d*%|\$[\d.,]+(?:\s*(?:billion|million|B|M))?)/gi);
+      const runs = parts.map(part => {
+        const isStat = /\d+\.?\d*%|\$[\d.,]+/.test(part);
+        return new TextRun({
+          text: part,
+          font: isStat ? "Arial" : "Calibri",
+          size: 21,
+          bold: isStat,
+          color: isStat ? NAVY : CHARCOAL,
+        });
+      });
+      return new Paragraph({ children: runs, spacing: { before: 0, after: 120, line: 300 } });
+    });
+  }
+
+  // Pair blocks into rows of 2
+  const colW = Math.floor(CONTENT_WIDTH / 2);
+  const cardBlocks = blocks.slice(0, 4); // max 4 cards
+  // Pad to even number
+  while (cardBlocks.length % 2 !== 0) cardBlocks.push({ heading: null, paras: [] });
+
+  for (let i = 0; i < cardBlocks.length; i += 2) {
+    const left  = cardBlocks[i];
+    const right = cardBlocks[i + 1];
+
+    function makeCard(block, w) {
+      const headerPara = new Paragraph({
+        children: [new TextRun({
+          text: (block.heading || "").toUpperCase(),
+          font: "Arial", size: 18, bold: true, color: "FFFFFF",
+        })],
+        spacing: { before: 0, after: 0, line: 240 },
+      });
+
+      const headerCell = cell(headerPara, {
+        width: w, fill: accent, noBorder: true, padV: 120, padH: 200,
+      });
+
+      const bodyParas = block.paras.length > 0
+        ? bodyRuns(block)
+        : [new Paragraph({ children: [new TextRun({ text: "" })], spacing: { before: 0, after: 0 } })];
+
+      const bodyCell = cell(bodyParas, {
+        width: w, fill: accentBg, noBorder: true, padV: 140, padH: 200, vAlign: VerticalAlign.TOP,
+      });
+
+      return [headerCell, bodyCell];
+    }
+
+    const [lHead, lBody] = makeCard(left,  colW);
+    const [rHead, rBody] = makeCard(right, colW);
+
+    // Render as two stacked rows: header row + body row
+    elements.push(spacer(6));
+    elements.push(new Table({
+      width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+      columnWidths: [colW, colW],
+      rows: [
+        new TableRow({ children: [lHead, rHead] }),
+        new TableRow({ children: [lBody, rBody] }),
+      ],
+    }));
+  }
+
+  elements.push(spacer(8));
+}
+
+// =============================================================================
 // S2a TWO-COLUMN LAYOUT
 // Groups the S2a narrative into subheading+body blocks and renders them
 // in a 2-column magazine grid. Numbers are bolded inline so they pop.
 // =============================================================================
-function renderS2aColumns(elements, processedParas, accent, accentBg, pullQuoteText) {
+function renderS2aColumns(elements, processedParas, accent, accentBg) {
   // ---- Group paragraphs into {heading, paras[]} blocks ----
   const blocks = [];
   let curr = { heading: null, paras: [] };
@@ -697,20 +824,11 @@ function renderS2aColumns(elements, processedParas, accent, accentBg, pullQuoteT
       lead = cutoff > 60 ? clean.substring(0, cutoff) : clean.substring(0, 120);
       rest = clean.substring(lead.length).trim();
     }
+    const cleanIntro = p.replace(/\*\*/g, "");
     elements.push(new Paragraph({
-      children: [
-        new TextRun({ text: lead, font: "Georgia", size: 27, bold: true, color: NAVY }),
-        ...(rest ? [new TextRun({ text: "  " + rest, font: "Georgia", size: 24, color: DARK_GRAY })] : []),
-      ],
-      spacing: { before: 0, after: 240, line: 360 },
-      indent: { left: 480, right: 280 },
-      border: { left: { style: BorderStyle.SINGLE, size: 34, color: accent, space: 14 } },
+      children: [new TextRun({ text: cleanIntro, font: "Calibri", size: 21, color: CHARCOAL })],
+      spacing: { before: 0, after: 160, line: 300 },
     }));
-  }
-
-  // Pull quote after intro
-  if (pullQuoteText) {
-    buildPullQuote(pullQuoteText, accent).forEach(el => elements.push(el));
   }
 
   // ---- Content blocks → 2-column grid ----
@@ -726,7 +844,7 @@ function renderS2aColumns(elements, processedParas, accent, accentBg, pullQuoteT
       out.push(new Paragraph({
         children: [new TextRun({
           text: block.heading.toUpperCase(),
-          font: "Arial", size: 19, bold: true, color: NAVY,
+          font: "Calibri", size: 21, bold: true, color: NAVY,
         })],
         spacing: { before: 60, after: 100 },
         border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: accent, space: 4 } },
@@ -885,11 +1003,16 @@ function buildNarrative(sections) {
 
     // ---- Parse narrative: separate "to watch" list for S2d ----
     const narrative = stripCitations(section.narrative || "");
-    const rawParas = narrative.split(/\n\n+/);
+    // Split on any newline(s) — handles both \n and \n\n from different LLMs.
+    // Then break any remaining long paragraphs at sentence boundaries.
+    const rawParas = narrative
+      .split(/\n+/)
+      .map(p => p.trim())
+      .filter(Boolean)
+      .flatMap(p => breakLongParagraph(p));
     let isFirst = true;
     let bodyParaCount = 0;
     let pullQuoteInserted = false;
-    const pullQuoteText = extractPullQuote(section.narrative || "");
     let watchListItems = [];
     const processedParas = [];
 
@@ -916,7 +1039,9 @@ function buildNarrative(sections) {
 
     // ---- Render paragraphs ----
     if (id === "S2a") {
-      renderS2aColumns(elements, processedParas, accent, accentBg, pullQuoteText);
+      renderS2aColumns(elements, processedParas, accent, accentBg);
+    } else if (id === "S2b") {
+      renderS2bColumns(elements, processedParas, accent, accentBg);
     } else { processedParas.forEach(p => {
       // Standalone subheading: entire paragraph is **text**
       // Rendered as a two-column band: thick accent stripe left + tinted heading panel
@@ -932,7 +1057,7 @@ function buildNarrative(sections) {
             cell(para(run("", { size: 2 })),
                  { width: stripeW, fill: accent, noBorder: true, padV: 80, padH: 0 }),
             cell(
-              para(run(subheadMatch[1].toUpperCase(), { bold: true, size: 20, color: NAVY, font: "Arial" }),
+              para(run(subheadMatch[1].toUpperCase(), { bold: true, size: 22, color: NAVY, font: "Calibri" }),
                    { spaceAfter: 0 }),
               { width: headW, fill: accentBg, noBorder: true, padV: 110, padH: 200 }
             ),
@@ -957,20 +1082,17 @@ function buildNarrative(sections) {
           rest = cleanText.substring(leadSentence.length).trim();
         }
 
-        const leadRuns = [
-          new TextRun({ text: leadSentence, font: "Georgia", size: 27, bold: true, color: NAVY }),
-        ];
-        if (rest) {
-          leadRuns.push(new TextRun({ text: "  " + rest, font: "Georgia", size: 24, color: DARK_GRAY }));
-        }
+        const cleanParts = cleanText.split(/(\*\*[^*]+\*\*)/g);
+        const leadRuns = cleanParts.map(part => {
+          if (part.startsWith("**") && part.endsWith("**")) {
+            return new TextRun({ text: part.replace(/\*\*/g, ""), font: "Calibri", size: 22, bold: true, color: CHARCOAL });
+          }
+          return new TextRun({ text: part, font: "Calibri", size: 22, color: CHARCOAL });
+        });
 
         elements.push(new Paragraph({
           children: leadRuns,
-          spacing: { before: 0, after: 240, line: 360 },
-          indent: { left: 480, right: 280 },
-          border: {
-            left: { style: BorderStyle.SINGLE, size: 34, color: accent, space: 14 },
-          },
+          spacing: { before: 0, after: 160, line: 320 },
         }));
         return;
       }
@@ -1155,7 +1277,7 @@ function buildNarrative(sections) {
 // =============================================================================
 // BLOCK: VERIFICATION APPENDIX
 // =============================================================================
-function buildVerification(verification, radarScores) {
+function buildVerification(verification) {
   const elements = [];
 
   elements.push(divider(BORDER, 6));
@@ -1218,20 +1340,6 @@ function buildVerification(verification, radarScores) {
     ),
   ], { spaceAfter: 120 }));
 
-  // Scoring disagreements
-  if (radarScores && radarScores.dimension_scores) {
-    const disagreements = radarScores.dimension_scores.filter(d => !d.models_agreed);
-    if (disagreements.length > 0) {
-      elements.push(para(run("Scoring Disagreements", { bold: true, size: 22, color: CHARCOAL }),
-                         { spaceBefore: 120, spaceAfter: 80 }));
-      disagreements.forEach(d => {
-        elements.push(para(run(`• ${d.dimension}: ${d.disagreement_note || ""}`,
-                               { size: 20, italics: true }),
-                           { spaceAfter: 80 }));
-      });
-    }
-  }
-
   // S5 advisory flags
   const s5 = (verification || {}).s5_issues || {};
   const allFlags = [
@@ -1272,6 +1380,82 @@ function buildVerification(verification, radarScores) {
 // MAIN
 // =============================================================================
 // =============================================================================
+// ECON EXPERT'S TAKE (S7)
+// Rendered after the narrative sections, before the verification report.
+// Uses a green accent stripe to visually distinguish it from the S2 sections.
+// =============================================================================
+function buildEconExpert(econExpert) {
+  if (!econExpert || !econExpert.narrative) return [];
+  const elements = [];
+
+  const ECON_GREEN = "1A5276";   // deep academic teal/green for the stripe
+
+  elements.push(spacer(20, true));
+
+  // Section banner — green accent stripe + navy header panel
+  const stripeW = 80;
+  const headerW = CONTENT_WIDTH - stripeW;
+  elements.push(new Table({
+    width: { size: CONTENT_WIDTH, type: WidthType.DXA },
+    columnWidths: [stripeW, headerW],
+    rows: [new TableRow({ cantSplit: true, children: [
+      cell(para(run("", { size: 2 })),
+           { width: stripeW, fill: ECON_GREEN, noBorder: true, padV: 160, padH: 0 }),
+      cell([
+        para(run("ECON EXPERT'S TAKE", { bold: true, size: 17, color: GOLD, font: "Arial" }),
+             { spaceAfter: 40 }),
+        para(run("Economic Theory  \u00B7  Academic Frameworks  \u00B7  Strategic Analysis", {
+          size: 15, italics: false, color: NAVY_FAINT, font: "Arial"
+        }), { spaceAfter: 0, keepNext: true }),
+      ], { width: headerW, fill: NAVY, noBorder: true, padV: 160, padH: 260, vAlign: VerticalAlign.CENTER }),
+    ]})]
+  }));
+
+  elements.push(spacer(8));
+
+  // Prose — same Georgia serif register as editorial
+  const rawParas = econExpert.narrative.split(/\n+/).map(p => p.trim()).filter(Boolean).flatMap(p => breakLongParagraph(p));
+  rawParas.forEach((p, i) => {
+    const cleaned = stripCitations(p);
+    if (i === 0) {
+      const firstSentMatch = cleaned.match(/^(.*?[.!?])\s*([\s\S]*)$/);
+      const lede = firstSentMatch ? firstSentMatch[1] : cleaned;
+      const rest = firstSentMatch ? firstSentMatch[2] : "";
+      elements.push(new Paragraph({
+        children: [
+          new TextRun({ text: lede, font: "Georgia", size: 28, bold: true, color: NAVY }),
+          ...(rest ? [new TextRun({ text: "  " + rest, font: "Georgia", size: 24, italics: true, color: DARK_GRAY })] : []),
+        ],
+        spacing: { before: 0, after: 200, line: 360 },
+      }));
+    } else {
+      elements.push(new Paragraph({
+        children: [new TextRun({ text: cleaned, font: "Georgia", size: 22, color: CHARCOAL })],
+        spacing: { before: 0, after: 160, line: 320 },
+      }));
+    }
+  });
+
+  // Hairline rule
+  elements.push(spacer(6));
+  elements.push(new Paragraph({
+    children: [new TextRun({ text: "" })],
+    border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: ECON_GREEN, space: 1 } },
+    spacing: { before: 0, after: 80 },
+  }));
+  elements.push(para(
+    run("Econ Expert analysis applies academic economic frameworks to reported results and does not constitute investment advice.", {
+      size: 16, italics: true, color: MID_GRAY, font: "Calibri"
+    }),
+    { spaceAfter: 0 }
+  ));
+
+  elements.push(spacer(12));
+  return elements;
+}
+
+
+// =============================================================================
 // EDITORIAL COMMENTARY (S6 — The Lex Writer)
 // =============================================================================
 function buildEditorial(editorial) {
@@ -1302,7 +1486,7 @@ function buildEditorial(editorial) {
   elements.push(spacer(8));
 
   // Editorial prose — Georgia serif, proper FT Lex layout
-  const rawParas = editorial.narrative.split(/\n+/).map(p => p.trim()).filter(Boolean);
+  const rawParas = editorial.narrative.split(/\n+/).map(p => p.trim()).filter(Boolean).flatMap(p => breakLongParagraph(p));
 
   rawParas.forEach((p, i) => {
     const cleaned = stripCitations(p);
@@ -1351,16 +1535,14 @@ function buildEditorial(editorial) {
 // =============================================================================
 // CONTEXT PANEL — Historical trend chart + consensus estimates + stock reaction
 // =============================================================================
-function buildContextPanel(contextBundle, trendChartPath) {
+function buildContextPanel(contextBundle) {
   if (!contextBundle) return [];
   const elements = [];
 
-  const hasChart = trendChartPath && fs.existsSync(trendChartPath);
   const hasConsensus = contextBundle.consensus_estimates && contextBundle.consensus_estimates.length > 0;
-  const hasReaction = contextBundle.stock_reaction && contextBundle.stock_reaction.reaction_pct != null;
   const hasPrior = contextBundle.prior_quarter_summaries && contextBundle.prior_quarter_summaries.length > 0;
 
-  if (!hasChart && !hasConsensus && !hasReaction && !hasPrior) return [];
+  if (!hasConsensus && !hasPrior) return [];
 
   elements.push(spacer(8, true));  // keepNext: anchors to the header table below
 
@@ -1372,7 +1554,7 @@ function buildContextPanel(contextBundle, trendChartPath) {
       cell([
         para(run("CONTEXTUAL INTELLIGENCE", { bold: true, size: 18, color: WHITE, font: "Arial" }),
              { spaceAfter: 60 }),
-        para(run("Historical performance, market reaction & peer context", {
+        para(run("Historical performance & peer context", {
           size: 17, italics: true, color: NAVY_FAINT, font: "Calibri"
         }), { spaceAfter: 0, keepNext: true }),
       ], { width: CONTENT_WIDTH, fill: "2563EB", noBorder: true, padV: 150, padH: 260, vAlign: VerticalAlign.CENTER }),
@@ -1381,120 +1563,40 @@ function buildContextPanel(contextBundle, trendChartPath) {
 
   elements.push(spacer(6));
 
-  // Trend chart
-  if (hasChart) {
-    try {
-      const chartBytes = fs.readFileSync(trendChartPath);
-      // 9.5 : 4.8 aspect ratio, width fills content area (643px @ 96dpi = 6.7")
-      elements.push(new Paragraph({
-        children: [new ImageRun({
-          data: chartBytes,
-          transformation: { width: 643, height: 325 },
-          type: "png",
-        })],
-        spacing: { before: 0, after: 120 },
-        alignment: AlignmentType.CENTER,
-      }));
-    } catch (e) {
-      // Chart read failed — skip
-    }
-  }
+  // Consensus vs. actual row (full-width)
+  if (hasConsensus) {
+    const colW = [1400, 1200, 1200, 1500];
+    const totalW = colW.reduce((a, b) => a + b, 0);
 
-  // Consensus + stock reaction row
-  if (hasConsensus || hasReaction) {
-    const leftW = Math.floor(CONTENT_WIDTH * 0.55);
-    const rightW = CONTENT_WIDTH - leftW;
-
-    const consensusRows = hasConsensus ? contextBundle.consensus_estimates.map(est => {
+    const consensusRows = contextBundle.consensus_estimates.map(est => {
       const verdictColor = est.verdict === 'Beat' ? GREEN : est.verdict === 'Miss' ? RED : CHARCOAL;
       return new TableRow({ children: [
         cell(para(run(est.metric, { size: 18, bold: true, color: CHARCOAL })),
-             { width: 1400, fill: LIGHT_BG, noBorder: true, padV: 80, padH: 120 }),
+             { width: colW[0], fill: LIGHT_BG, noBorder: true, padV: 80, padH: 120 }),
         cell(para(run(est.estimate || '—', { size: 18, color: MID_GRAY })),
-             { width: 1200, fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
+             { width: colW[1], fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
         cell(para(run(est.actual || '—', { size: 18, color: CHARCOAL, bold: true })),
-             { width: 1200, fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
+             { width: colW[2], fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
         cell(para(run(`${est.verdict || ''} ${est.surprise_pct || ''}`.trim(), { size: 18, bold: true, color: verdictColor })),
-             { width: 1500, fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
+             { width: colW[3], fill: WHITE, noBorder: true, padV: 80, padH: 120 }),
       ]});
-    }) : [];
+    });
 
-    const consensusTable = hasConsensus ? new Table({
-      width: { size: leftW, type: WidthType.DXA },
-      columnWidths: [1400, 1200, 1200, 1500],
+    elements.push(spacer(6));
+    elements.push(para(run("CONSENSUS vs. ACTUAL", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }), { spaceAfter: 80 }));
+    elements.push(new Table({
+      width: { size: totalW, type: WidthType.DXA },
+      columnWidths: colW,
       rows: [
         new TableRow({ tableHeader: true, children: [
-          cell(para(run("Metric", { size: 17, bold: true, color: MID_GRAY })),
-               { width: 1400, fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
-          cell(para(run("Estimate", { size: 17, bold: true, color: MID_GRAY })),
-               { width: 1200, fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
-          cell(para(run("Actual", { size: 17, bold: true, color: MID_GRAY })),
-               { width: 1200, fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
-          cell(para(run("Result", { size: 17, bold: true, color: MID_GRAY })),
-               { width: 1500, fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
+          cell(para(run("Metric",   { size: 17, bold: true, color: MID_GRAY })), { width: colW[0], fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
+          cell(para(run("Estimate", { size: 17, bold: true, color: MID_GRAY })), { width: colW[1], fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
+          cell(para(run("Actual",   { size: 17, bold: true, color: MID_GRAY })), { width: colW[2], fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
+          cell(para(run("Result",   { size: 17, bold: true, color: MID_GRAY })), { width: colW[3], fill: LIGHT_BG, noBorder: true, padV: 60, padH: 120 }),
         ]}),
         ...consensusRows,
       ],
-    }) : null;
-
-    const reactionColor = hasReaction
-      ? (contextBundle.stock_reaction.reaction_pct >= 2 ? GREEN
-        : contextBundle.stock_reaction.reaction_pct <= -2 ? RED
-        : AMBER)
-      : CHARCOAL;
-    const reactionSign = hasReaction && contextBundle.stock_reaction.reaction_pct >= 0 ? '+' : '';
-    const reactionPct = hasReaction ? `${reactionSign}${contextBundle.stock_reaction.reaction_pct.toFixed(1)}%` : null;
-
-    const reactionContent = hasReaction ? [
-      para(run("MARKET REACTION", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }), { spaceAfter: 60 }),
-      para(run(reactionPct, { bold: true, size: 40, color: reactionColor, font: "Arial" }), { spaceAfter: 40 }),
-      para(run(contextBundle.stock_reaction.reaction_label || '', { size: 18, italics: true, color: MID_GRAY }), { spaceAfter: 40 }),
-      ...(contextBundle.stock_reaction.price_day_before ? [
-        para(run(`Pre:  $${contextBundle.stock_reaction.price_day_before.toFixed(2)}   →   Post:  $${contextBundle.stock_reaction.price_day_after?.toFixed(2) || '—'}`,
-             { size: 17, color: MID_GRAY }))
-      ] : []),
-    ] : [para(run(''))];
-
-    if (hasConsensus) {
-      // Two-column: consensus table left, market reaction right
-      const noOuterBorder = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
-      elements.push(new Table({
-        width: { size: CONTENT_WIDTH, type: WidthType.DXA },
-        columnWidths: [leftW, rightW],
-        borders: { top: noOuterBorder, bottom: noOuterBorder, left: noOuterBorder, right: noOuterBorder, insideH: noOuterBorder, insideV: noOuterBorder },
-        rows: [new TableRow({ cantSplit: true, children: [
-          cell([
-            para(run("CONSENSUS vs. ACTUAL", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }), { spaceAfter: 80 }),
-            consensusTable,
-          ], { width: leftW, fill: WHITE, noBorder: true, padV: 120, padH: 160 }),
-          cell(reactionContent, { width: rightW, fill: LIGHT_BG, noBorder: true, padV: 120, padH: 200, vAlign: VerticalAlign.CENTER }),
-        ]})]
-      }));
-    } else if (hasReaction) {
-      // Market reaction only — full-width card, content centered
-      const noOuterBorder = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
-      elements.push(new Table({
-        width: { size: CONTENT_WIDTH, type: WidthType.DXA },
-        columnWidths: [CONTENT_WIDTH],
-        borders: { top: noOuterBorder, bottom: noOuterBorder, left: noOuterBorder, right: noOuterBorder, insideH: noOuterBorder, insideV: noOuterBorder },
-        rows: [new TableRow({ cantSplit: true, children: [
-          cell([
-            para(run("MARKET REACTION", { bold: true, size: 17, color: MID_GRAY, font: "Arial" }),
-                 { align: AlignmentType.CENTER, spaceAfter: 80 }),
-            para(run(reactionPct || "—", { bold: true, size: 52, color: reactionColor, font: "Arial" }),
-                 { align: AlignmentType.CENTER, spaceAfter: 40 }),
-            para(run(contextBundle.stock_reaction.reaction_label || '', { size: 19, italics: true, color: MID_GRAY }),
-                 { align: AlignmentType.CENTER, spaceAfter: 40 }),
-            ...(contextBundle.stock_reaction.price_day_before ? [
-              para(run(
-                `Pre: $${contextBundle.stock_reaction.price_day_before.toFixed(2)}   \u2192   Post: $${contextBundle.stock_reaction.price_day_after?.toFixed(2) || '\u2014'}`,
-                { size: 18, color: MID_GRAY }
-              ), { align: AlignmentType.CENTER, spaceAfter: 0 })
-            ] : []),
-          ], { width: CONTENT_WIDTH, fill: LIGHT_BG, noBorder: true, padV: 180, padH: 560, vAlign: VerticalAlign.CENTER }),
-        ]})]
-      }));
-    }
+    }));
   }
 
   // Trend narrative
@@ -1517,15 +1619,14 @@ function buildContextPanel(contextBundle, trendChartPath) {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.length < 3) {
-    console.error("Usage: node format_report.js <report_json> <chart_png> <output_docx> [trend_chart_png]");
+  if (args.length < 2) {
+    console.error("Usage: node format_report.js <report_json> <output_docx>");
     process.exit(1);
   }
 
-  const [reportJsonPath, chartPngPath, outputDocxPath, trendChartPathArg] = args;
-  const trendChartPath = (trendChartPathArg && trendChartPathArg.trim()) ? trendChartPathArg : null;
+  const [reportJsonPath, outputDocxPath] = args;
   const reportData = JSON.parse(fs.readFileSync(reportJsonPath, 'utf8'));
-  const { snapshot, editorial, sections, radar_scores, context_bundle, verification } = reportData;
+  const { snapshot, editorial, econ_expert, sections, context_bundle, verification } = reportData;
 
   // Build verification summary for header badge
   const groundingVals = verification && verification.source_grounding_scores
@@ -1537,8 +1638,6 @@ async function main() {
     avg_grounding: avgGrounding ? `${(avgGrounding * 100).toFixed(0)}%` : "—",
     contradictions: verification
       ? Object.values(verification.contradiction_counts || {}).reduce((a, b) => a + b, 0) : "—",
-    model_agreement: (radar_scores && radar_scores.dimension_scores &&
-      radar_scores.dimension_scores.every(d => d.models_agreed)) ? "High" : "Partial",
   };
 
   const children = [
@@ -1547,11 +1646,11 @@ async function main() {
     ...buildMetricCards(snapshot),
     ...buildTakeaways(snapshot),
     ...buildEditorial(editorial),
-    ...buildContextPanel(context_bundle, trendChartPath),
+    ...buildContextPanel(context_bundle),
     ...buildSignals(sections),
-    ...buildScorecard(radar_scores, chartPngPath),
     ...buildNarrative(sections),
-    ...buildVerification(verification, radar_scores),
+    ...buildEconExpert(econ_expert),
+    ...buildVerification(verification),
   ];
 
   const doc = new Document({

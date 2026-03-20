@@ -17,6 +17,10 @@ node_modules/
 outputs/
 transcripts/
 
+# Knowledge base — large binary index and copyrighted textbook PDFs
+textbooks/
+knowledge_base/
+
 # OS
 .DS_Store
 Thumbs.db

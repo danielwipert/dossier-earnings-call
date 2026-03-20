@@ -233,6 +233,10 @@ class Claim(BaseModel):
         default=None,
         description="For derived claims only: explain how this was calculated from the source facts."
     )
+    signal_valence: Optional[str] = Field(
+        default=None,
+        description="Sentiment of this claim for the Signals at a Glance panel: 'positive', 'negative', or 'neutral'."
+    )
 
 
 class S2SectionOutput(BaseModel):
@@ -509,7 +513,10 @@ class ContextBundle(BaseModel):
     company_name: str
     current_quarter: str
 
-    # Historical trend data (prior 4 quarters + current)
+    # LLM-generated company profile (business model, history, strategic arc)
+    company_profile: str = ""
+
+    # Historical trend data (prior 8 quarters)
     historical_financials: list[QuarterlySnapshot] = Field(default_factory=list)
     trend_narrative: str = ""   # Pre-computed 2-3 sentence trend summary
 
@@ -537,6 +544,12 @@ class ContextBundle(BaseModel):
         lines = ["=== CONTEXTUAL INTELLIGENCE BUNDLE ===",
                  "NOTE: This data is EXTERNAL to the transcript. Claims derived",
                  "solely from this bundle must be labeled 'interpretive'.", ""]
+
+        # --- Company profile ---
+        if self.company_profile:
+            lines.append("** Company Profile **")
+            lines.append(self.company_profile)
+            lines.append("")
 
         # --- Historical financials ---
         if self.historical_financials:
@@ -591,11 +604,14 @@ class ContextBundle(BaseModel):
         if self.peer_summaries:
             lines.append("** Peer Company Performance (Same Quarter) **")
             for peer in self.peer_summaries:
-                lines.append(f"\n[{peer.ticker} — {peer.company_name}, {peer.quarter_label}]")
+                source_label = "(transcript)" if peer.source not in ("yfinance", "unavailable") else "(financial data only)"
+                lines.append(f"\n[{peer.ticker} — {peer.company_name}, {peer.quarter_label}] {source_label}")
                 for m in peer.key_metrics:
                     lines.append(f"  • {m}")
-                if peer.key_themes:
-                    lines.append(f"  Themes: {'; '.join(peer.key_themes)}")
+                # Only show themes if they came from a real transcript, not just the yfinance placeholder
+                real_themes = [t for t in peer.key_themes if "transcript not available" not in t and "Financial benchmarking" not in t]
+                if real_themes:
+                    lines.append(f"  Themes: {'; '.join(real_themes)}")
             lines.append("")
 
         # --- Missing data note ---
@@ -607,3 +623,34 @@ class ContextBundle(BaseModel):
 
         lines.append("=== END OF CONTEXT BUNDLE ===")
         return "\n".join(lines)
+
+
+# =============================================================================
+# STAGE S7: ECON EXPERT
+# Runs after S6 (editorial synthesis) and before report assembly.
+# Reads the full assembled report text, retrieves textbook passages via FAISS,
+# and writes "The Econ Expert's Take" — theoretical/academic context layered
+# on top of the verified earnings call analysis.
+# No Gate 2 verification: the underlying report has already been vetted.
+# =============================================================================
+
+class TextbookCitation(BaseModel):
+    """A textbook passage that informed the econ expert's analysis."""
+    book_title: str = Field(description="Title of the source textbook (PDF stem).")
+    page_num: int   = Field(description="Page number the retrieved chunk came from.")
+    relevance: str  = Field(description="Brief note on how this passage was applied.")
+
+
+class S7Output(BaseModel):
+    """
+    Output of S7: the Econ Expert's Take section.
+    Stands alone from the S2SectionOutput schema — it cites textbooks, not FactList facts.
+    """
+    section_id:          str   = Field(default="S7")
+    section_title:       str   = Field(default="The Econ Expert's Take")
+    narrative:           str   = Field(description="500-700 word FT/New Yorker prose section.")
+    textbook_citations:  list[TextbookCitation] = Field(
+        default_factory=list,
+        description="Textbooks cited in the narrative, with page references."
+    )
+    generating_model:    str   = Field(description="Model ID used to generate this section.")
