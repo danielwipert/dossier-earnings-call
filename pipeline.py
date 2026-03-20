@@ -44,7 +44,7 @@ from core.schemas import (
 from core.prompts import (
     s1a_fact_extractor, gate_1a_validator, s1b_structured_data_pull,
     s2a_narrative_analyst, s2b_signal_detector, s2c_gap_analyst,
-    s2d_context_analyst, s2e_credibility_tracker, s2f_competitive_intelligence,
+    s2f_competitive_intelligence,
     s6_editorial_synthesis, gate_2_fact_verifier,
     s5_holistic_verifier
 )
@@ -210,19 +210,23 @@ def parse_json_response(raw_response: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        # 4. Sanitize control characters and invalid escapes inside strings, then retry
-        if "control character" in str(e) or "Invalid" in str(e) or "escape" in str(e).lower():
-            sanitized = _sanitize_control_chars(text)
-            try:
-                return json.loads(sanitized)
-            except json.JSONDecodeError:
-                pass  # Fall through to truncation recovery
+        # 4. Always try sanitizing control chars and invalid escapes first
+        sanitized = _sanitize_control_chars(text)
+        try:
+            return json.loads(sanitized)
+        except json.JSONDecodeError:
+            pass  # Fall through to truncation recovery
 
         # Attempt to recover from truncated JSON (common when max_tokens cuts mid-response).
         print(f"  ! JSON parse failed: {e} — attempting truncation recovery")
         recovered = _try_recover_truncated_json(text)
         if recovered is not None:
             print(f"  ! Truncation recovery succeeded")
+            return recovered
+        # Try truncation recovery on sanitized text too
+        recovered = _try_recover_truncated_json(sanitized)
+        if recovered is not None:
+            print(f"  ! Truncation recovery (sanitized) succeeded")
             return recovered
         print(f"  ! Response tail (last 300 chars): ...{text[-300:]}")
         raise
@@ -434,11 +438,20 @@ def run_s1b(factlist: FactList) -> S1bOutput:
     Run the Structured Data Pull. Returns financial tables for Section 1.
     """
     print("  Running S1b: Structured Data Pull...")
-    
+
     factlist_json = factlist.model_dump_json(indent=2)
     prompt = s1b_structured_data_pull(factlist_json)
-    raw = call_model(prompt, GENERATION_MODEL, max_tokens=6000)
-    data = parse_json_response(raw)
+    last_exc = None
+    for attempt in range(3):
+        raw = call_model(prompt, GENERATION_MODEL, max_tokens=6000)
+        try:
+            data = parse_json_response(raw)
+            break
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            print(f"  ! S1b JSON parse error (attempt {attempt+1}/3): {exc} — retrying")
+    else:
+        raise last_exc
 
     # Coerce null string fields the model occasionally omits
     for row in data.get("key_financials", []):
@@ -478,6 +491,14 @@ def run_s1b(factlist: FactList) -> S1bOutput:
 # All four agents receive the same inputs and run concurrently.
 # =============================================================================
 
+def _coerce_narrative(data: dict) -> dict:
+    """If the model returned narrative as a dict (subheadings as keys), flatten to string."""
+    narr = data.get("narrative")
+    if isinstance(narr, dict):
+        data["narrative"] = "\n\n".join(f"**{k}**\n{v}" for k, v in narr.items())
+    return data
+
+
 async def run_s2_agent_async(
     agent_id: str,
     prompt_fn,
@@ -494,12 +515,21 @@ async def run_s2_agent_async(
 
     # Run the blocking model call in a thread pool so it doesn't block other agents
     loop = asyncio.get_running_loop()
-    raw = await loop.run_in_executor(
-        None,
-        lambda: call_model(prompt, GENERATION_MODEL, max_tokens=12000)
-    )
-
-    data = parse_json_response(raw)
+    last_exc = None
+    for attempt in range(3):
+        raw = await loop.run_in_executor(
+            None,
+            lambda: call_model(prompt, GENERATION_MODEL, max_tokens=12000)
+        )
+        try:
+            data = parse_json_response(raw)
+            break
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            print(f"  ! {agent_id} JSON parse error (attempt {attempt+1}/3): {exc} — retrying")
+    else:
+        raise last_exc
+    data = _coerce_narrative(data)
     # Coerce null source_fact_ids to [] — model occasionally returns null instead of []
     for claim in data.get("claims", []):
         if claim.get("source_fact_ids") is None:
@@ -525,9 +555,7 @@ async def run_s2_all_async(
         ("S2a", s2a_narrative_analyst),
         ("S2b", s2b_signal_detector),
         ("S2c", s2c_gap_analyst),
-        ("S2d", s2d_context_analyst),
-        ("S2e", s2e_credibility_tracker),    # always run — falls back to transcript-only analysis when no context
-        ("S2f", s2f_competitive_intelligence), # always run — falls back to transcript-only analysis when no context
+        ("S2f", s2f_competitive_intelligence),
     ]
 
     agent_labels = ", ".join(a[0] for a in agents)
@@ -698,6 +726,7 @@ claims flagged above. Do not change claims that were not flagged.
 """
             raw = call_model(retry_prompt, GENERATION_MODEL, max_tokens=8000)
             data = parse_json_response(raw)
+            data = _coerce_narrative(data)
             for claim in data.get("claims", []):
                 if claim.get("source_fact_ids") is None:
                     claim["source_fact_ids"] = []
@@ -771,6 +800,7 @@ def run_s6(
     raw = call_model(prompt, GENERATION_MODEL, max_tokens=3000)
     data = parse_json_response(raw)
 
+    data = _coerce_narrative(data)
     for claim in data.get("claims", []):
         if claim.get("source_fact_ids") is None:
             claim["source_fact_ids"] = []
@@ -979,7 +1009,7 @@ def run_pipeline(
     s1b_output = run_s1b(factlist)
     
     # -------------------------------------------------------------------------
-    # STAGE S2: ANALYSIS AGENTS (parallel — S2a-S2d always, S2e/S2f if context)
+    # STAGE S2: ANALYSIS AGENTS (parallel — S2a, S2b, S2c, S2f)
     # -------------------------------------------------------------------------
     print("\nSTAGE 3: Analysis Agents (parallel)")
     s2_sections = asyncio.run(run_s2_all_async(transcript, factlist, context_bundle_text))
@@ -993,8 +1023,6 @@ def run_pipeline(
         "S2a": s2a_narrative_analyst,
         "S2b": s2b_signal_detector,
         "S2c": s2c_gap_analyst,
-        "S2d": s2d_context_analyst,
-        "S2e": s2e_credibility_tracker,
         "S2f": s2f_competitive_intelligence,
     }
 

@@ -641,6 +641,12 @@ class TextbookCitation(BaseModel):
     relevance: str  = Field(description="Brief note on how this passage was applied.")
 
 
+class TheoryPoint(BaseModel):
+    """A single theory-grounded observation in the Econ Expert section."""
+    concept:     str = Field(description="The economic/strategic concept name (3-6 words).")
+    explanation: str = Field(description="2-3 sentences: what the company is doing, what theory says about it, the implication.")
+
+
 class S7Output(BaseModel):
     """
     Output of S7: the Econ Expert's Take section.
@@ -648,9 +654,17 @@ class S7Output(BaseModel):
     """
     section_id:          str   = Field(default="S7")
     section_title:       str   = Field(default="The Econ Expert's Take")
-    narrative:           str   = Field(description="500-700 word FT/New Yorker prose section.")
+    narrative:           str   = Field(default="", description="Legacy prose field (unused when smart_moves/questionable_calls are present).")
+    smart_moves:         list[TheoryPoint] = Field(
+        default_factory=list,
+        description="2-3 things the company is doing that are theoretically sound."
+    )
+    questionable_calls:  list[TheoryPoint] = Field(
+        default_factory=list,
+        description="2-3 things the company is doing that are theoretically questionable."
+    )
     textbook_citations:  list[TextbookCitation] = Field(
         default_factory=list,
-        description="Textbooks cited in the narrative, with page references."
+        description="Textbooks cited, with page references."
     )
     generating_model:    str   = Field(description="Model ID used to generate this section.")
