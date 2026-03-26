@@ -462,15 +462,17 @@ def run_s1b(factlist: FactList) -> S1bOutput:
 
     result = S1bOutput(**data)
 
-    # Override sector with authoritative yfinance GICS classification
-    # (LLM sometimes misclassifies, e.g. MCD as "Consumer Staples" instead of "Consumer Discretionary")
+    # Override sector with authoritative yfinance industry classification
+    # Use 'industry' (specific, e.g. "Residential Construction") over 'sector' (broad, e.g. "Consumer Cyclical")
     try:
         import yfinance as yf
         raw_ticker = result.ticker.split()[0].split("(")[0].strip()
         tk = yf.Ticker(raw_ticker)
+        yf_industry = tk.info.get("industry", "")
         yf_sector = tk.info.get("sector", "")
-        if yf_sector:
-            result = result.model_copy(update={"sector": yf_sector})
+        yf_label = yf_industry or yf_sector
+        if yf_label:
+            result = result.model_copy(update={"sector": yf_label})
     except Exception:
         tk = None
 

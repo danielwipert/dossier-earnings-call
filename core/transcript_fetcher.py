@@ -795,6 +795,15 @@ def _clean_transcript(text: str) -> str:
     # Collapse 3+ consecutive blank lines to 2
     text = re.sub(r'\n{3,}', '\n\n', text)
 
+    # Collapse single newlines (PDF layout word-wrap breaks) into spaces.
+    # Double newlines (paragraph / speaker-turn breaks) are preserved.
+    # Without this, pdfplumber's mid-sentence line breaks prevent verbatim-quote
+    # lookups since models quote text without the embedded newlines.
+    text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
+
+    # Collapse any runs of spaces created by the above step
+    text = re.sub(r'  +', ' ', text)
+
     # Strip leading/trailing whitespace
     text = text.strip()
 

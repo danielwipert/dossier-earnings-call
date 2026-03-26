@@ -249,23 +249,37 @@ Produce four structured outputs:
 
 1. COMPANY SUMMARY
    - Company name, ticker symbol, quarter (e.g. "Q2 FY2026"), sector
+   - For sector, use the precise GICS industry group or sub-industry label.
+     CORRECT examples: "Homebuilding", "Semiconductors", "Internet Retail", "Integrated Oil & Gas",
+     "Asset Management", "Specialty Retail", "Pharmaceuticals".
+     FORBIDDEN: broad bucket labels like "Consumer Cyclical", "Consumer Discretionary",
+     "Technology", "Healthcare", "Financials". Those are GICS sectors, not industries — too vague.
 
 2. HEADLINE
    Write a single sentence that HOOKS the reader — the defining story of this quarter.
    Think Financial Times front page, not press release.
 
    RULES:
-   - Reveal the tension, the turn, or the surprise — not just what happened, but what it MEANS
+   - Capture the STATE OF THE COMPANY as revealed by this quarter: the central tension,
+     contradiction, inflection point, or uncomfortable truth. What does the quarter MEAN?
+   - Anchor in what HAPPENED (past tense) — results, trends, shifts — not in future plans
+     or guidance. Forward projections may support the headline but cannot be its subject.
+   - Reveal the tension or paradox: if revenue fell but margins held, that IS the story.
+     If the company is betting on a pivot while the financials deteriorate, say so.
    - Use strong, specific verbs. Name the stakes.
    - Do NOT recite a list of numbers. Pick the ONE most significant fact and build around it.
    - Do NOT include fact IDs (like [F001]) in the headline text — those go in source_fact_ids only
    - Do NOT use corporate language: "outperform", "leverage", "execute on strategy"
+   - FORBIDDEN: headlines whose main clause is a future projection (e.g. "expects X to reach Y%")
 
    BAD: "Company reported Q3 revenue of $5B, up 10% YoY, beating estimates by 2%."
    GOOD: "X bets its future on cloud as core software revenue falls for the first time in a decade."
 
    BAD: "McDonald's delivered strong Q4 results with 5.7% global comp sales growth."
    GOOD: "Customers are coming back to McDonald's — and for the first time in years, it's because they want to, not because it's the cheapest option."
+
+   BAD: "KB Home's shift to built-to-order sales accelerates, with 70% of deliveries expected in H2."
+   GOOD: "KB Home's revenue fell 23% but its margins barely moved — a result that tests whether its build-to-order bet is working or just obscuring the damage."
 
 3. KEY FINANCIALS TABLE
    For each major financial metric reported, provide:
@@ -279,16 +293,31 @@ Produce four structured outputs:
    - vs_estimate: beat/miss/in-line vs. analyst consensus if mentioned (null if not mentioned)
    - source_fact_ids: the fact_id(s) this came from
 
+   UNIQUENESS RULE: Every metric must cover a DIFFERENT financial dimension. Do not include
+   both a top-line revenue figure and a near-identical revenue sub-component — e.g. if total
+   revenue and segment revenue are within 1-2% of each other, keep only the more meaningful
+   one. Aim for breadth: top-line, profitability, per-unit/per-share, operational, and
+   balance-sheet metrics each tell a distinct story. If two rows would say essentially the
+   same thing to a reader, cut the less informative one.
+
 4. THREE KEY TAKEAWAYS
    Each takeaway must tell a DIFFERENT story and speak to a retail investor or journalist
    who has 30 seconds. What do they NEED to understand about this quarter?
+
+   IMPORTANT — TAKEAWAY #1 IS THE COVER STORY:
+   Takeaway #1 will be displayed as the opening deck copy directly beneath the headline on
+   the cover page of the dossier. It must be the single most important thing to understand
+   about this company right now — the central thesis of the quarter. Think of it as the
+   answer to: "If you could only tell someone ONE thing about this earnings call, what is it?"
+   It should reflect the true state of the company, not just a positive spin or a single
+   data point. If the headline captures the tension, takeaway #1 should deepen it.
 
    RULES for each takeaway:
    - 2-3 sentences max. Lead with the insight, then support it with the specific number.
    - The FIRST sentence must be the punchy insight — bold and declarative.
    - Do NOT include fact IDs (like [F001, F002]) in the text — those go in source_fact_ids only
    - Do NOT use corporate speak: "outperform", "synergies", "execute", "robust demand"
-   - Cover 3 DISTINCT stories — don't repeat the same theme
+   - Cover 3 DISTINCT stories — don't repeat the same theme across any of the three
 
    BAD: "McDonald's achieved global comp sales growth of 5.7% in Q4 2025, driven by positive guest counts."
    GOOD: "Customers are back — and not just for value. For the first time in several quarters, guest counts are up even as McDonald's holds prices steady, suggesting the brand's pull is stronger than the discount."
@@ -303,7 +332,7 @@ Respond with ONLY a JSON object. No preamble, no explanation, no markdown code f
   "company_name": "Microsoft Corporation",
   "ticker": "MSFT (NASDAQ)",
   "quarter": "Q2 FY2026",
-  "sector": "Technology",
+  "sector": "Homebuilding",
   "headline": "One hook sentence that captures the quarter's defining story — no fact IDs.",
   "key_financials": [
     {{
@@ -319,6 +348,16 @@ Respond with ONLY a JSON object. No preamble, no explanation, no markdown code f
       "number": 1,
       "text": "Bold insight first. Then the specific data that backs it up, in plain English.",
       "source_fact_ids": ["F005", "F006"]
+    }},
+    {{
+      "number": 2,
+      "text": "A second, distinct story from the quarter. Different theme from takeaway 1.",
+      "source_fact_ids": ["F007", "F008"]
+    }},
+    {{
+      "number": 3,
+      "text": "A third, distinct story — forward-looking risk, guidance, or structural shift.",
+      "source_fact_ids": ["F009"]
     }}
   ]
 }}
@@ -1375,7 +1414,7 @@ Respond with ONLY a JSON array of strings. No preamble, no explanation, no markd
 
 def s7_econ_expert_writer(report_text: str, passages_text: str) -> str:
     return f"""You are a tenured economics professor writing for a sophisticated financial audience.
-Your task is to produce a structured "Theory Verdict" on what this company reported this quarter —
+Your task is to produce a structured "Business Principles" assessment on what this company reported this quarter —
 two boxes: what the company is doing RIGHT according to business and economic theory,
 and what the company is doing that theory says is QUESTIONABLE or likely to backfire.
 
@@ -1426,7 +1465,7 @@ Respond with ONLY a JSON object. No preamble, no explanation, no markdown code f
 
 {{
   "section_id": "S7",
-  "section_title": "Theory Verdict",
+  "section_title": "Business Principles",
   "narrative": "",
   "smart_moves": [
     {{

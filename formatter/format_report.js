@@ -1534,9 +1534,9 @@ function buildEconExpert(econExpert) {
       cell(para(run("", { size: 2 })),
            { width: stripeW, fill: "1A5276", noBorder: true, padV: 160, padH: 0 }),
       cell([
-        para(run("THEORY VERDICT", { bold: true, size: 17, color: GOLD, font: "Arial" }),
+        para(run("BUSINESS PRINCIPLES", { bold: true, size: 17, color: GOLD, font: "Arial" }),
              { spaceAfter: 40 }),
-        para(run("What business theory says about this company's choices", {
+        para(run("Do the company's actions align well with established business principles and theory", {
           size: 15, italics: false, color: NAVY_FAINT, font: "Arial"
         }), { spaceAfter: 0 }),
       ], { width: headerW, fill: NAVY, noBorder: true, padV: 160, padH: 260, vAlign: VerticalAlign.CENTER }),
@@ -1601,7 +1601,7 @@ function buildEconExpert(econExpert) {
   // Disclaimer
   elements.push(spacer(6));
   elements.push(para(
-    run("Theory Verdict applies academic frameworks to reported results and does not constitute investment advice.", {
+    run("Business Principles applies academic frameworks to reported results and does not constitute investment advice.", {
       size: 16, italics: true, color: MID_GRAY, font: "Calibri"
     }),
     { spaceAfter: 0 }

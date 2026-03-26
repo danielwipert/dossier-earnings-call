@@ -222,7 +222,7 @@ def run_s7(
 
     result = S7Output(
         section_id="S7",
-        section_title=data.get("section_title", "Theory Verdict"),
+        section_title=data.get("section_title", "Business Principles"),
         narrative=data.get("narrative", ""),
         smart_moves=_parse_theory_points(data.get("smart_moves", [])),
         questionable_calls=_parse_theory_points(data.get("questionable_calls", [])),
@@ -230,7 +230,7 @@ def run_s7(
         generating_model=generation_model,
     )
 
-    print(f"  ✓ S7 complete: Theory Verdict written "
+    print(f"  ✓ S7 complete: Business Principles written "
           f"({len(result.smart_moves)} smart, {len(result.questionable_calls)} questionable, "
           f"{len(result.textbook_citations)} textbook citations)")
     return result
