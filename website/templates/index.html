@@ -1,0 +1,374 @@
+{% extends "base.html" %}
+
+{% macro stage_row(stage, idx) %}
+<div class="pipeline-stage{% if stage.is_gate %} gate{% endif %}">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">{{ "%02d"|format(idx) }}</div>
+    <div class="pipeline-state">{{ stage.id }}</div>
+    <div class="pipeline-name">{{ stage.name }}</div>
+    {% if stage.model %}
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">{{ stage.model }}</div>
+    {% endif %}
+  </div>
+  <div class="pipeline-stage-right">
+    <p>{{ stage.description }}</p>
+    <div class="pipeline-io">
+      {% if stage.input %}
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">{{ stage.input }}</span>
+      </div>
+      {% endif %}
+      {% if stage.output %}
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">{{ stage.output }}</span>
+      </div>
+      {% endif %}
+      {% if stage.rule %}
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Hard Rule</span>
+        <span class="pipeline-io-value" style="color:var(--amber);">{{ stage.rule }}</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{% block nav %}
+<nav>
+  <div class="nav-inner">
+    <span class="nav-logo">Chorus <span>AI</span> — Earnings Call Dossier</span>
+    <ul class="nav-links">
+      {% for link in nav_links %}
+      <li><a href="{{ link.href }}">{{ link.label }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+</nav>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Hero ──────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-tag">{{ hero.tag }}</div>
+    <h1>{{ hero.headline | safe }}</h1>
+    <p class="hero-sub">{{ hero.subheadline }}</p>
+    <div class="hero-cta">
+      <a href="{{ github_url }}" class="btn btn-primary" target="_blank" rel="noopener">View on GitHub</a>
+      <a href="#pipeline" class="btn btn-secondary">Architecture &darr;</a>
+    </div>
+    <div class="hero-stats">
+      {% for stat in hero.stats %}
+      <div class="hero-stat">
+        <div class="hero-stat-value">{{ stat.value }}</div>
+        <div class="hero-stat-label">{{ stat.label }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<!-- ── What It Produces ──────────────────────────────────── -->
+<section id="output">
+  <div class="container">
+    <div class="section-label">Output</div>
+    <h2 class="section-title">What the pipeline produces</h2>
+    <p class="section-intro">
+      Given any earnings call transcript, the pipeline outputs a structured JSON artifact
+      and a magazine-quality PDF brief — every claim traceable to a verbatim quote.
+    </p>
+
+    <div class="output-grid">
+      {% for item in output_sections %}
+      <div class="output-card">
+        <div class="output-num">{{ "%02d"|format(loop.index) }}</div>
+        <div class="output-name">{{ item.name }}</div>
+        <div class="output-source">Source: {{ item.source }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="what-grid">
+      <div class="what-cell">
+        <div class="what-cell-label">Structured artifact</div>
+        <h3>report_output.json</h3>
+        <p>All verified claims, grounding scores, gate verdicts, omitted sections, and run metadata — in one typed JSON contract readable by downstream systems.</p>
+      </div>
+      <div class="what-cell">
+        <div class="what-cell-label">Formatted brief</div>
+        <h3>{TICKER}_Q{Q}_{YEAR}_Brief.pdf</h3>
+        <p>A formatted PDF brief with magazine-quality layout, radar chart, financial snapshot table, and textbook-grounded economic analysis. Styled after FT / Lex editorial quality.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Design Principles ─────────────────────────────────── -->
+<section id="principles">
+  <div class="container">
+    <div class="section-label">Design Principles</div>
+    <h2 class="section-title">Architectural commitments</h2>
+    <p class="section-intro">
+      These are load-bearing constraints, not preferences. Every pipeline decision traces back to one of them.
+    </p>
+
+    <div class="callout">
+      <p><strong>Core commitment:</strong> trust is structural, not a model property. Every factual claim in the output traces back to a verbatim quote from the transcript through an immutable FactList. Nothing advances between stages without a governance gate check.</p>
+    </div>
+
+    <div class="principles-grid">
+      {% for p in principles %}
+      <div class="principle-card">
+        <div class="principle-accent"></div>
+        <div class="principle-num">{{ "%02d"|format(loop.index) }}</div>
+        <div class="principle-name">{{ p.name }}</div>
+        <p class="principle-desc">{{ p.desc }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<!-- ── The FactList ──────────────────────────────────────── -->
+<section id="factlist">
+  <div class="container">
+    <div class="section-label">Core Concept</div>
+    <h2 class="section-title">The FactList — immutable foundation</h2>
+    <p class="section-intro">
+      The FactList is the single source of truth for every claim in the report. It is created once,
+      validated by Gate 1a, and locked forever. No downstream agent may add, modify, or remove facts.
+    </p>
+
+    <div class="factlist-trace">
+<span class="trace-claim">Final report claim</span>
+       <span class="trace-label">↓  (S2 claim cites source_fact_ids)</span>
+<span class="trace-key">FactList entry F012</span>
+  <span class="trace-label">verbatim_quote:</span> <span class="trace-value">"adjusted EPS increased 16 percent year-over-year"</span>
+  <span class="trace-label">speaker:</span>         <span class="trace-value">"Raj Subramaniam, President and CEO"</span>
+       <span class="trace-label">↓  (Gate 1a confirmed quote exists in transcript)</span>
+<span class="trace-pass">Transcript source text: confirmed ✓</span>
+    </div>
+
+    <div class="what-grid">
+      <div class="what-cell">
+        <div class="what-cell-label">Three claim types</div>
+        <h3>Every S2 claim must declare one</h3>
+        <p><strong>grounded</strong> — Directly supported by a FactList entry. Must cite source_fact_ids.<br><br>
+        <strong>derived</strong> — Calculated or inferred from facts. Must cite source_fact_ids + derivation_note.<br><br>
+        <strong>interpretive</strong> — Editorial judgment. Max ~20% of claims. Auto-passes Gate 2.</p>
+      </div>
+      <div class="what-cell">
+        <div class="what-cell-label">Seven fact types</div>
+        <h3>Extracted by S1a across three passes</h3>
+        <p>
+          <span class="tag">financial_metric</span>&nbsp;
+          <span class="tag">forward_guidance</span>&nbsp;
+          <span class="tag">management_statement</span>&nbsp;
+          <span class="tag">operational_metric</span>&nbsp;
+          <span class="tag">analyst_question</span>&nbsp;
+          <span class="tag">competitive_reference</span>&nbsp;
+          <span class="tag">prior_quarter_reference</span>
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Pipeline Architecture ─────────────────────────────── -->
+<section id="pipeline">
+  <div class="container">
+    <div class="section-label">Architecture</div>
+    <h2 class="section-title">Pipeline stages</h2>
+    <p class="section-intro">
+      The pipeline runs in strict sequence. Gates (⊘) are governance checkpoints — they evaluate,
+      accept, reject, or halt. They never generate content. Generation and verification always use
+      different model families.
+    </p>
+
+    <div class="pipeline-flow">
+      {% for stage in pipeline_stages %}
+      {{ stage_row(stage, loop.index) }}
+      {% if not loop.last %}
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<!-- ── Verification Core ─────────────────────────────────── -->
+<section id="verification">
+  <div class="container">
+    <div class="section-label">Verification Core</div>
+    <h2 class="section-title">How trust is enforced</h2>
+    <p class="section-intro">
+      Verification is not a post-hoc check — it is structurally embedded at three points in the pipeline,
+      each using a different model family to prevent shared blind spots.
+    </p>
+
+    <div class="verify-diagram">
+      <div class="verify-diagram-title">Verification architecture</div>
+      <div class="verify-flow">
+        <div class="verify-node">
+          <div class="verify-node-label">S1a</div>
+          <div class="verify-node-sub">Fact Extractor</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node highlight">
+          <div class="verify-node-label">⊘ Gate 1a</div>
+          <div class="verify-node-sub">FactList Lock</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node">
+          <div class="verify-node-label">S2a–S2f</div>
+          <div class="verify-node-sub">Analysis (parallel)</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node highlight">
+          <div class="verify-node-label">⊘ Gate 2</div>
+          <div class="verify-node-sub">Fact Verifier</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node">
+          <div class="verify-node-label">S6</div>
+          <div class="verify-node-sub">Editorial</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node highlight">
+          <div class="verify-node-label">S5</div>
+          <div class="verify-node-sub">Holistic Check</div>
+        </div>
+      </div>
+      <div class="verify-loop">
+        <span class="verify-loop-label">Gate 2: retry up to 2× per section on failure</span>
+      </div>
+    </div>
+
+    <div class="verify-rules">
+      {% for rule in verify_rules %}
+      <div class="verify-rule">
+        <span class="verify-rule-status status-{{ rule.status }}">{{ rule.status }}</span>
+        <p>{{ rule.desc }}</p>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="callout callout-amber mt-4">
+      <p><strong>Graceful degradation:</strong> Level 0 (all gates pass, full report) → Level 1 (Gate 2 rejects, retry) → Level 2 (partial output, omit section) → Level 3 (pipeline halt, no output). A FactList failure always triggers Level 3 — no partial output when the foundation is bad.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Theory ────────────────────────────────────────────── -->
+<section id="theory">
+  <div class="container">
+    <div class="section-label">Theoretical Foundation</div>
+    <h2 class="section-title">Cybernetic frameworks</h2>
+    <p class="section-intro">
+      The architecture is grounded in three cybernetic frameworks adapted for AI systems. These are not
+      metaphors — they are the load-bearing logic behind specific design decisions.
+    </p>
+
+    <div class="theory-grid">
+      {% for t in theory %}
+      <div class="theory-card">
+        <div class="theory-arrow"></div>
+        <div class="theory-framework">{{ t.framework }}</div>
+        <div class="theory-name">{{ t.name }}</div>
+        <div class="theory-author">{{ t.author }}</div>
+        <p class="theory-desc">{{ t.desc }}</p>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="callout">
+      <p><strong>Why cybernetics?</strong> Traditional software testing assumes a known correct output. AI generation systems produce outputs that are plausible but not deterministically correct — the failure mode is fluent hallucination, not a crash. Cybernetic frameworks are designed precisely for self-regulating systems that must manage variety, uncertainty, and observer bias. They are the right foundation for this problem class.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Model Configuration ───────────────────────────────── -->
+<section id="models">
+  <div class="container">
+    <div class="section-label">Model Configuration</div>
+    <h2 class="section-title">Multi-family verification</h2>
+    <p class="section-intro">
+      Generation and verification must use different model families — always. No family's blind spots
+      carry through the full pipeline.
+    </p>
+
+    <div class="arch-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Model</th>
+            <th>Stages</th>
+            <th>Family</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in models %}
+          <tr>
+            <td>{{ m.role }}</td>
+            <td><span class="model-pill">{{ m.model }}</span></td>
+            <td>{{ m.stages }}</td>
+            <td><span class="tag">{{ m.family }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <p>All LLM calls route via <strong>Together AI</strong>'s OpenAI-compatible endpoint, making model swaps trivial. The embedding model (<code>all-MiniLM-L6-v2</code>) runs locally for S7 FAISS retrieval — no API call required.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Tech Stack ────────────────────────────────────────── -->
+<section id="tech">
+  <div class="container">
+    <div class="section-label">Technology</div>
+    <h2 class="section-title">Tech stack</h2>
+    <p class="section-intro">
+      Minimal dependencies chosen for reliability and auditability, not ecosystem popularity.
+    </p>
+
+    <div class="tech-grid">
+      {% for item in tech_stack %}
+      <div class="tech-card">
+        <div class="tech-category">{{ item.category }}</div>
+        <div class="tech-name">{{ item.name }}</div>
+        <p class="tech-desc">{{ item.desc }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block footer %}
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">
+        <strong>Chorus AI Systems</strong> — Earnings Call Dossier<br>
+        Built by Daniel Wipert
+      </div>
+      <ul class="footer-links">
+        <li><a href="{{ github_url }}" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="#pipeline">Architecture</a></li>
+        <li><a href="#theory">Theory</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+{% endblock %}

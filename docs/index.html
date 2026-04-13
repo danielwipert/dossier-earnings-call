@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="A multi-agent Python pipeline that transforms earnings call transcripts into verified analytical briefs styled after Financial Times / Lex editorial quality." />
+  <title>Earnings Call Dossier — Chorus AI Systems</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="static/css/style.css" />
+</head>
+<body>
+
+  
+<nav>
+  <div class="nav-inner">
+    <span class="nav-logo">Chorus <span>AI</span> — Earnings Call Dossier</span>
+    <ul class="nav-links">
+      
+      <li><a href="#output">Output</a></li>
+      
+      <li><a href="#principles">Principles</a></li>
+      
+      <li><a href="#pipeline">Pipeline</a></li>
+      
+      <li><a href="#verification">Verification</a></li>
+      
+      <li><a href="#theory">Theory</a></li>
+      
+      <li><a href="#models">Models</a></li>
+      
+    </ul>
+  </div>
+</nav>
+
+
+  <main>
+    
+
+<!-- ── Hero ──────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-tag">Chorus AI Systems — v1</div>
+    <h1>Earnings call intelligence,<br><em>grounded in fact.</em></h1>
+    <p class="hero-sub">A multi-agent pipeline that transforms any earnings call transcript into a verified analytical brief. Every claim traces back to a verbatim quote. Nothing advances between stages without a governance gate.</p>
+    <div class="hero-cta">
+      <a href="https://github.com/danielwipert/dossier.ec" class="btn btn-primary" target="_blank" rel="noopener">View on GitHub</a>
+      <a href="#pipeline" class="btn btn-secondary">Architecture &darr;</a>
+    </div>
+    <div class="hero-stats">
+      
+      <div class="hero-stat">
+        <div class="hero-stat-value">9</div>
+        <div class="hero-stat-label">Pipeline stages</div>
+      </div>
+      
+      <div class="hero-stat">
+        <div class="hero-stat-value">3</div>
+        <div class="hero-stat-label">Verification gates</div>
+      </div>
+      
+      <div class="hero-stat">
+        <div class="hero-stat-value">3</div>
+        <div class="hero-stat-label">Model families</div>
+      </div>
+      
+      <div class="hero-stat">
+        <div class="hero-stat-value">≥90%</div>
+        <div class="hero-stat-label">Gate 2 pass threshold</div>
+      </div>
+      
+      <div class="hero-stat">
+        <div class="hero-stat-value">7</div>
+        <div class="hero-stat-label">Fact types extracted</div>
+      </div>
+      
+      <div class="hero-stat">
+        <div class="hero-stat-value">0</div>
+        <div class="hero-stat-label">Investment advice allowed</div>
+      </div>
+      
+    </div>
+  </div>
+</section>
+
+<!-- ── What It Produces ──────────────────────────────────── -->
+<section id="output">
+  <div class="container">
+    <div class="section-label">Output</div>
+    <h2 class="section-title">What the pipeline produces</h2>
+    <p class="section-intro">
+      Given any earnings call transcript, the pipeline outputs a structured JSON artifact
+      and a magazine-quality PDF brief — every claim traceable to a verbatim quote.
+    </p>
+
+    <div class="output-grid">
+      
+      <div class="output-card">
+        <div class="output-num">01</div>
+        <div class="output-name">Editorial Commentary</div>
+        <div class="output-source">Source: S6 — The Lex Writer</div>
+      </div>
+      
+      <div class="output-card">
+        <div class="output-num">02</div>
+        <div class="output-name">Business Narrative</div>
+        <div class="output-source">Source: S2a</div>
+      </div>
+      
+      <div class="output-card">
+        <div class="output-num">03</div>
+        <div class="output-name">Signals & Thesis</div>
+        <div class="output-source">Source: S2b</div>
+      </div>
+      
+      <div class="output-card">
+        <div class="output-num">04</div>
+        <div class="output-name">Management Gaps</div>
+        <div class="output-source">Source: S2c</div>
+      </div>
+      
+      <div class="output-card">
+        <div class="output-num">05</div>
+        <div class="output-name">Competitive Positioning</div>
+        <div class="output-source">Source: S2f</div>
+      </div>
+      
+      <div class="output-card">
+        <div class="output-num">06</div>
+        <div class="output-name">Financial Snapshot</div>
+        <div class="output-source">Source: S1b</div>
+      </div>
+      
+      <div class="output-card">
+        <div class="output-num">07</div>
+        <div class="output-name">Radar Chart (7 dimensions)</div>
+        <div class="output-source">Source: formatter</div>
+      </div>
+      
+      <div class="output-card">
+        <div class="output-num">08</div>
+        <div class="output-name">Business Principles</div>
+        <div class="output-source">Source: S7 — FAISS + textbooks</div>
+      </div>
+      
+      <div class="output-card">
+        <div class="output-num">09</div>
+        <div class="output-name">Verification Notes</div>
+        <div class="output-source">Source: Gate 2 + S5</div>
+      </div>
+      
+    </div>
+
+    <div class="what-grid">
+      <div class="what-cell">
+        <div class="what-cell-label">Structured artifact</div>
+        <h3>report_output.json</h3>
+        <p>All verified claims, grounding scores, gate verdicts, omitted sections, and run metadata — in one typed JSON contract readable by downstream systems.</p>
+      </div>
+      <div class="what-cell">
+        <div class="what-cell-label">Formatted brief</div>
+        <h3>{TICKER}_Q{Q}_{YEAR}_Brief.pdf</h3>
+        <p>A formatted PDF brief with magazine-quality layout, radar chart, financial snapshot table, and textbook-grounded economic analysis. Styled after FT / Lex editorial quality.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Design Principles ─────────────────────────────────── -->
+<section id="principles">
+  <div class="container">
+    <div class="section-label">Design Principles</div>
+    <h2 class="section-title">Architectural commitments</h2>
+    <p class="section-intro">
+      These are load-bearing constraints, not preferences. Every pipeline decision traces back to one of them.
+    </p>
+
+    <div class="callout">
+      <p><strong>Core commitment:</strong> trust is structural, not a model property. Every factual claim in the output traces back to a verbatim quote from the transcript through an immutable FactList. Nothing advances between stages without a governance gate check.</p>
+    </div>
+
+    <div class="principles-grid">
+      
+      <div class="principle-card">
+        <div class="principle-accent"></div>
+        <div class="principle-num">01</div>
+        <div class="principle-name">No unverified output</div>
+        <p class="principle-desc">If the verification pipeline is unavailable, halt. There is no fallback to unverified generation. A system that sometimes verifies is not a verified system.</p>
+      </div>
+      
+      <div class="principle-card">
+        <div class="principle-accent"></div>
+        <div class="principle-num">02</div>
+        <div class="principle-name">FactList immutability</div>
+        <p class="principle-desc">The FactList is locked after Gate 1a passes. No downstream agent may add, modify, or remove facts. Trust is established once and cannot be retroactively altered.</p>
+      </div>
+      
+      <div class="principle-card">
+        <div class="principle-accent"></div>
+        <div class="principle-num">03</div>
+        <div class="principle-name">Multi-family verification</div>
+        <p class="principle-desc">Generation and verification always use different model families. A model that generates a hallucination and verifies it is structurally equivalent to no verification.</p>
+      </div>
+      
+      <div class="principle-card">
+        <div class="principle-accent"></div>
+        <div class="principle-num">04</div>
+        <div class="principle-name">No investment advice</div>
+        <p class="principle-desc">S5 scans for buy / sell / hold language. If found, immediate Level 3 halt — no report released. The system produces analysis, never recommendations.</p>
+      </div>
+      
+      <div class="principle-card">
+        <div class="principle-accent"></div>
+        <div class="principle-num">05</div>
+        <div class="principle-name">Verbatim grounding</div>
+        <p class="principle-desc">Every FactList entry requires a character-exact verbatim_quote from the transcript. If a quote cannot be confirmed, the fact is rejected at Gate 1a — not softened.</p>
+      </div>
+      
+      <div class="principle-card">
+        <div class="principle-accent"></div>
+        <div class="principle-num">06</div>
+        <div class="principle-name">Observed observation</div>
+        <p class="principle-desc">Every report discloses what the verification system can and cannot catch. The system observes its own observation process — a second-order cybernetic commitment.</p>
+      </div>
+      
+    </div>
+  </div>
+</section>
+
+<!-- ── The FactList ──────────────────────────────────────── -->
+<section id="factlist">
+  <div class="container">
+    <div class="section-label">Core Concept</div>
+    <h2 class="section-title">The FactList — immutable foundation</h2>
+    <p class="section-intro">
+      The FactList is the single source of truth for every claim in the report. It is created once,
+      validated by Gate 1a, and locked forever. No downstream agent may add, modify, or remove facts.
+    </p>
+
+    <div class="factlist-trace">
+<span class="trace-claim">Final report claim</span>
+       <span class="trace-label">↓  (S2 claim cites source_fact_ids)</span>
+<span class="trace-key">FactList entry F012</span>
+  <span class="trace-label">verbatim_quote:</span> <span class="trace-value">"adjusted EPS increased 16 percent year-over-year"</span>
+  <span class="trace-label">speaker:</span>         <span class="trace-value">"Raj Subramaniam, President and CEO"</span>
+       <span class="trace-label">↓  (Gate 1a confirmed quote exists in transcript)</span>
+<span class="trace-pass">Transcript source text: confirmed ✓</span>
+    </div>
+
+    <div class="what-grid">
+      <div class="what-cell">
+        <div class="what-cell-label">Three claim types</div>
+        <h3>Every S2 claim must declare one</h3>
+        <p><strong>grounded</strong> — Directly supported by a FactList entry. Must cite source_fact_ids.<br><br>
+        <strong>derived</strong> — Calculated or inferred from facts. Must cite source_fact_ids + derivation_note.<br><br>
+        <strong>interpretive</strong> — Editorial judgment. Max ~20% of claims. Auto-passes Gate 2.</p>
+      </div>
+      <div class="what-cell">
+        <div class="what-cell-label">Seven fact types</div>
+        <h3>Extracted by S1a across three passes</h3>
+        <p>
+          <span class="tag">financial_metric</span>&nbsp;
+          <span class="tag">forward_guidance</span>&nbsp;
+          <span class="tag">management_statement</span>&nbsp;
+          <span class="tag">operational_metric</span>&nbsp;
+          <span class="tag">analyst_question</span>&nbsp;
+          <span class="tag">competitive_reference</span>&nbsp;
+          <span class="tag">prior_quarter_reference</span>
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Pipeline Architecture ─────────────────────────────── -->
+<section id="pipeline">
+  <div class="container">
+    <div class="section-label">Architecture</div>
+    <h2 class="section-title">Pipeline stages</h2>
+    <p class="section-intro">
+      The pipeline runs in strict sequence. Gates (⊘) are governance checkpoints — they evaluate,
+      accept, reject, or halt. They never generate content. Generation and verification always use
+      different model families.
+    </p>
+
+    <div class="pipeline-flow">
+      
+      
+<div class="pipeline-stage">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">01</div>
+    <div class="pipeline-state">S0</div>
+    <div class="pipeline-name">Context Assembly</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">Llama-4-Maverick</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Fetches historical financials (3 prior quarters via yfinance), post-earnings stock price reaction, EPS consensus estimates (Alpha Vantage), prior quarter transcript summaries from SEC EDGAR, and peer company summaries. Non-blocking — missing data is logged but never halts the pipeline.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">ticker, year, quarter, peers</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">context_bundle</span>
+      </div>
+      
+      
+    </div>
+  </div>
+</div>
+
+      
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      
+      
+      
+<div class="pipeline-stage">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">02</div>
+    <div class="pipeline-state">S1a</div>
+    <div class="pipeline-name">Fact Extractor</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">Llama-4-Maverick</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Three targeted passes over the transcript. Pass 1: financial_metric, forward_guidance. Pass 2: management_statement, operational_metric. Pass 3: analyst_question, competitive_reference, prior_quarter_reference. Each fact requires a character-exact verbatim_quote and named speaker. Duplicates removed by quote matching.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">transcript</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">FactList (provisional)</span>
+      </div>
+      
+      
+    </div>
+  </div>
+</div>
+
+      
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      
+      
+      
+<div class="pipeline-stage gate">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">03</div>
+    <div class="pipeline-state">⊘ Gate 1a</div>
+    <div class="pipeline-name">FactList Validation</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">Mistral-Small-24B</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Validates every FactList entry: quote exists verbatim in transcript, speaker is named, fact type is correct. ≥90%: proceed. 80–89%: strip failing facts, proceed at Level 1 degradation. <80%: hard halt. After this gate passes, the FactList is immutable.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">FactList, transcript</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">locked FactList</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Hard Rule</span>
+        <span class="pipeline-io-value" style="color:var(--amber);"><80% fidelity → halt</span>
+      </div>
+      
+    </div>
+  </div>
+</div>
+
+      
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      
+      
+      
+<div class="pipeline-stage">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">04</div>
+    <div class="pipeline-state">S1b</div>
+    <div class="pipeline-name">Structured Data Pull</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">Llama-4-Maverick</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Reads the locked FactList and produces the financial snapshot: key metrics table with YoY changes and vs-estimate comparisons, headline, and 3–5 key takeaways. Sector classification overridden with authoritative yfinance GICS data.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">locked FactList, context_bundle</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">financial_snapshot</span>
+      </div>
+      
+      
+    </div>
+  </div>
+</div>
+
+      
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      
+      
+      
+<div class="pipeline-stage">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">05</div>
+    <div class="pipeline-state">S2a–S2f</div>
+    <div class="pipeline-name">Analysis Agents (parallel)</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">Llama-4-Maverick</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Four agents run simultaneously via asyncio.gather(): S2a Business Narrative (strategic context, execution), S2b Signals & Thesis (investment themes, risks, catalysts), S2c Management Gaps (deflected questions, unfulfilled commitments), S2f Competitive Intelligence (peer benchmarking). Every claim must declare its type: grounded, derived, or interpretive.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">transcript, locked FactList, context_bundle</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">sections: S2a, S2b, S2c, S2f</span>
+      </div>
+      
+      
+    </div>
+  </div>
+</div>
+
+      
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      
+      
+      
+<div class="pipeline-stage gate">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">06</div>
+    <div class="pipeline-state">⊘ Gate 2</div>
+    <div class="pipeline-name">Fact Verifier</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">Mistral-Small-24B</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Runs per section. For each claim, checks whether cited FactList facts actually support it: aligned, absent, or contradicted. Pass condition: grounding_score ≥ 0.90 AND contradiction_count == 0. Interpretive claims auto-pass. S2c anchor claims citing analyst_question or prior_quarter_reference auto-pass. Fail → retry up to 2× with failure summary → omit section.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">S2 sections, locked FactList</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">verified sections + grounding scores</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Hard Rule</span>
+        <span class="pipeline-io-value" style="color:var(--amber);">score < 0.90 or contradiction → retry/omit</span>
+      </div>
+      
+    </div>
+  </div>
+</div>
+
+      
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      
+      
+      
+<div class="pipeline-stage">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">07</div>
+    <div class="pipeline-state">S6</div>
+    <div class="pipeline-name">Editorial Synthesis</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">Llama-4-Maverick</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Writes the opening commentary in FT Lex style — overarching narrative, paradoxes, investor implications. Reads all verified S2 sections. Intentionally runs after Gate 2 so it has access to the complete verified picture. Non-blocking if it fails.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">verified S2 sections</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">editorial_commentary</span>
+      </div>
+      
+      
+    </div>
+  </div>
+</div>
+
+      
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      
+      
+      
+<div class="pipeline-stage gate">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">08</div>
+    <div class="pipeline-state">S5</div>
+    <div class="pipeline-name">Holistic Verifier</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">DeepSeek-V3.1</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Cross-section consistency check using a different model family from generation and Gate 2. Checks for: conflicting claims across sections, mislabeled claim types, misleading framing of neutral facts, investment advice language. If buy/sell/hold language is found → immediate halt, no report released.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">all verified sections</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">consistency verdict</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Hard Rule</span>
+        <span class="pipeline-io-value" style="color:var(--amber);">investment advice language → halt</span>
+      </div>
+      
+    </div>
+  </div>
+</div>
+
+      
+      <div class="pipeline-connector">
+        <span class="pipeline-arrow">↓</span>
+      </div>
+      
+      
+      
+<div class="pipeline-stage">
+  <div class="pipeline-stage-left">
+    <div class="pipeline-num">09</div>
+    <div class="pipeline-state">S7</div>
+    <div class="pipeline-name">Business Principles</div>
+    
+    <div class="pipeline-state" style="color:var(--steel);margin-top:0.25rem;font-size:0.6rem;">Llama-4-Maverick + MiniLM-L6-v2</div>
+    
+  </div>
+  <div class="pipeline-stage-right">
+    <p>Two-step: (1) LLM generates 6–8 semantic queries from the assembled report, (2) each query retrieves top-5 chunks from a FAISS textbook index (economics and business strategy textbooks), (3) LLM writes the Business Principles section citing retrieved passages. Skipped gracefully if the FAISS index is missing.</p>
+    <div class="pipeline-io">
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Input</span>
+        <span class="pipeline-io-value">report, FAISS textbook index</span>
+      </div>
+      
+      
+      <div class="pipeline-io-item">
+        <span class="pipeline-io-label">Output</span>
+        <span class="pipeline-io-value">econ_expert section</span>
+      </div>
+      
+      
+    </div>
+  </div>
+</div>
+
+      
+      
+    </div>
+  </div>
+</section>
+
+<!-- ── Verification Core ─────────────────────────────────── -->
+<section id="verification">
+  <div class="container">
+    <div class="section-label">Verification Core</div>
+    <h2 class="section-title">How trust is enforced</h2>
+    <p class="section-intro">
+      Verification is not a post-hoc check — it is structurally embedded at three points in the pipeline,
+      each using a different model family to prevent shared blind spots.
+    </p>
+
+    <div class="verify-diagram">
+      <div class="verify-diagram-title">Verification architecture</div>
+      <div class="verify-flow">
+        <div class="verify-node">
+          <div class="verify-node-label">S1a</div>
+          <div class="verify-node-sub">Fact Extractor</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node highlight">
+          <div class="verify-node-label">⊘ Gate 1a</div>
+          <div class="verify-node-sub">FactList Lock</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node">
+          <div class="verify-node-label">S2a–S2f</div>
+          <div class="verify-node-sub">Analysis (parallel)</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node highlight">
+          <div class="verify-node-label">⊘ Gate 2</div>
+          <div class="verify-node-sub">Fact Verifier</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node">
+          <div class="verify-node-label">S6</div>
+          <div class="verify-node-sub">Editorial</div>
+        </div>
+        <div class="verify-arrow">→</div>
+        <div class="verify-node highlight">
+          <div class="verify-node-label">S5</div>
+          <div class="verify-node-sub">Holistic Check</div>
+        </div>
+      </div>
+      <div class="verify-loop">
+        <span class="verify-loop-label">Gate 2: retry up to 2× per section on failure</span>
+      </div>
+    </div>
+
+    <div class="verify-rules">
+      
+      <div class="verify-rule">
+        <span class="verify-rule-status status-pass">pass</span>
+        <p>grounding_score ≥ 0.90 AND contradiction_count == 0 → section passes Gate 2 and is included in the report.</p>
+      </div>
+      
+      <div class="verify-rule">
+        <span class="verify-rule-status status-pass">pass</span>
+        <p>interpretive claims auto-pass Gate 2 — editorial judgment is not fact-verifiable. Capped at ~20% of all claims.</p>
+      </div>
+      
+      <div class="verify-rule">
+        <span class="verify-rule-status status-pass">pass</span>
+        <p>S2c anchor claims citing analyst_question or prior_quarter_reference facts auto-pass — question existence is the grounding.</p>
+      </div>
+      
+      <div class="verify-rule">
+        <span class="verify-rule-status status-retry">retry</span>
+        <p>Gate 2 fail → section is regenerated with a failure summary appended. Retried up to 2×. Gate 2 re-evaluates on each retry.</p>
+      </div>
+      
+      <div class="verify-rule">
+        <span class="verify-rule-status status-retry">retry</span>
+        <p>Gate 1a 80–89% fidelity → failing facts stripped, FactList locked at reduced size, pipeline continues at Level 1 degradation.</p>
+      </div>
+      
+      <div class="verify-rule">
+        <span class="verify-rule-status status-fail">fail</span>
+        <p>Gate 1a <80% fidelity → hard halt. No partial output. FactList failure poisons everything downstream.</p>
+      </div>
+      
+      <div class="verify-rule">
+        <span class="verify-rule-status status-fail">fail</span>
+        <p>S5 detects buy / sell / hold language → immediate Level 3 halt. Report is suppressed, no output released.</p>
+      </div>
+      
+      <div class="verify-rule">
+        <span class="verify-rule-status status-fail">fail</span>
+        <p>Section fails all Gate 2 retries → omitted from report. Noted in omitted_sections in the JSON artifact.</p>
+      </div>
+      
+    </div>
+
+    <div class="callout callout-amber mt-4">
+      <p><strong>Graceful degradation:</strong> Level 0 (all gates pass, full report) → Level 1 (Gate 2 rejects, retry) → Level 2 (partial output, omit section) → Level 3 (pipeline halt, no output). A FactList failure always triggers Level 3 — no partial output when the foundation is bad.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Theory ────────────────────────────────────────────── -->
+<section id="theory">
+  <div class="container">
+    <div class="section-label">Theoretical Foundation</div>
+    <h2 class="section-title">Cybernetic frameworks</h2>
+    <p class="section-intro">
+      The architecture is grounded in three cybernetic frameworks adapted for AI systems. These are not
+      metaphors — they are the load-bearing logic behind specific design decisions.
+    </p>
+
+    <div class="theory-grid">
+      
+      <div class="theory-card">
+        <div class="theory-arrow"></div>
+        <div class="theory-framework">Viable System Model</div>
+        <div class="theory-name">Multi-layer governance</div>
+        <div class="theory-author">Stafford Beer</div>
+        <p class="theory-desc">Beer's VSM maps five nested management systems that every viable organism must have. The pipeline maps directly: S1a/S1b are the operational units; Gate 1a and Gate 2 are the coordination layer; S5 is the intelligence layer watching for systemic inconsistency; and the design constraints are the policy layer. Each layer governs only what it can see.</p>
+      </div>
+      
+      <div class="theory-card">
+        <div class="theory-arrow"></div>
+        <div class="theory-framework">Law of Requisite Variety</div>
+        <div class="theory-name">Verification must match generation</div>
+        <div class="theory-author">W. Ross Ashby</div>
+        <p class="theory-desc">Ashby's Law: only variety can destroy variety. A single-model verifier has less variety than the generation system it checks — it will systematically miss the failure modes it shares with the generator. Multi-family verification amplifies the controller's variety to match the full space of generation failures.</p>
+      </div>
+      
+      <div class="theory-card">
+        <div class="theory-arrow"></div>
+        <div class="theory-framework">Second-Order Cybernetics</div>
+        <div class="theory-name">Observing the observer</div>
+        <div class="theory-author">Heinz von Foerster</div>
+        <p class="theory-desc">Von Foerster: the observer is always part of the system it observes. A verification system that uses the same model family as generation creates a closed epistemic loop — the system observes itself and mistakes that for independent confirmation. The structural diversity requirement and the Verification Notes section (which discloses what the system cannot catch) are direct implementations of this principle.</p>
+      </div>
+      
+    </div>
+
+    <div class="callout">
+      <p><strong>Why cybernetics?</strong> Traditional software testing assumes a known correct output. AI generation systems produce outputs that are plausible but not deterministically correct — the failure mode is fluent hallucination, not a crash. Cybernetic frameworks are designed precisely for self-regulating systems that must manage variety, uncertainty, and observer bias. They are the right foundation for this problem class.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Model Configuration ───────────────────────────────── -->
+<section id="models">
+  <div class="container">
+    <div class="section-label">Model Configuration</div>
+    <h2 class="section-title">Multi-family verification</h2>
+    <p class="section-intro">
+      Generation and verification must use different model families — always. No family's blind spots
+      carry through the full pipeline.
+    </p>
+
+    <div class="arch-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Model</th>
+            <th>Stages</th>
+            <th>Family</th>
+          </tr>
+        </thead>
+        <tbody>
+          
+          <tr>
+            <td>Generation</td>
+            <td><span class="model-pill">Llama-4-Maverick-17B-128E-Instruct-FP8</span></td>
+            <td>S0, S1a, S1b, S2a–f, S6, S7</td>
+            <td><span class="tag">Meta / Llama</span></td>
+          </tr>
+          
+          <tr>
+            <td>Verification A</td>
+            <td><span class="model-pill">Mistral-Small-24B-Instruct-2501</span></td>
+            <td>Gate 1a, Gate 2</td>
+            <td><span class="tag">Mistral</span></td>
+          </tr>
+          
+          <tr>
+            <td>Verification B</td>
+            <td><span class="model-pill">DeepSeek-V3.1</span></td>
+            <td>S5 (holistic verifier)</td>
+            <td><span class="tag">DeepSeek</span></td>
+          </tr>
+          
+          <tr>
+            <td>Embedding</td>
+            <td><span class="model-pill">all-MiniLM-L6-v2</span></td>
+            <td>S7 (FAISS retrieval)</td>
+            <td><span class="tag">sentence-transformers</span></td>
+          </tr>
+          
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <p>All LLM calls route via <strong>Together AI</strong>'s OpenAI-compatible endpoint, making model swaps trivial. The embedding model (<code>all-MiniLM-L6-v2</code>) runs locally for S7 FAISS retrieval — no API call required.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Tech Stack ────────────────────────────────────────── -->
+<section id="tech">
+  <div class="container">
+    <div class="section-label">Technology</div>
+    <h2 class="section-title">Tech stack</h2>
+    <p class="section-intro">
+      Minimal dependencies chosen for reliability and auditability, not ecosystem popularity.
+    </p>
+
+    <div class="tech-grid">
+      
+      <div class="tech-card">
+        <div class="tech-category">Orchestration</div>
+        <div class="tech-name">Python + asyncio</div>
+        <p class="tech-desc">Pipeline orchestration with asyncio.gather() for parallel S2 agents.</p>
+      </div>
+      
+      <div class="tech-card">
+        <div class="tech-category">LLM API</div>
+        <div class="tech-name">Together AI</div>
+        <p class="tech-desc">OpenAI-compatible endpoint for all LLM calls. Swap models by changing a config string.</p>
+      </div>
+      
+      <div class="tech-card">
+        <div class="tech-category">Data contracts</div>
+        <div class="tech-name">Pydantic</div>
+        <p class="tech-desc">Typed schemas for every inter-stage artifact. Invalid data raises at the boundary, not downstream.</p>
+      </div>
+      
+      <div class="tech-card">
+        <div class="tech-category">Transcript fetching</div>
+        <div class="tech-name">EDGAR / Finnhub / FMP</div>
+        <p class="tech-desc">Auto-cascade: tries EDGAR first, then Finnhub, then FMP. Local PDF also supported via PyMuPDF.</p>
+      </div>
+      
+      <div class="tech-card">
+        <div class="tech-category">Market data</div>
+        <div class="tech-name">yfinance + Alpha Vantage</div>
+        <p class="tech-desc">Historical financials, stock reaction, EPS consensus estimates for S0 context assembly.</p>
+      </div>
+      
+      <div class="tech-card">
+        <div class="tech-category">Vector search</div>
+        <div class="tech-name">FAISS + sentence-transformers</div>
+        <p class="tech-desc">IndexFlatL2 over 500-word overlapping textbook chunks for S7 economic retrieval.</p>
+      </div>
+      
+      <div class="tech-card">
+        <div class="tech-category">PDF output</div>
+        <div class="tech-name">Node.js + docx-js</div>
+        <p class="tech-desc">format_report.js builds the Word doc; report_formatter.py converts to PDF.</p>
+      </div>
+      
+      <div class="tech-card">
+        <div class="tech-category">Charts</div>
+        <div class="tech-name">Matplotlib</div>
+        <p class="tech-desc">7-dimension radar chart and trend chart, embedded as PNGs in the PDF brief.</p>
+      </div>
+      
+      <div class="tech-card">
+        <div class="tech-category">GUI</div>
+        <div class="tech-name">Streamlit</div>
+        <p class="tech-desc">Optional web interface: upload transcript, stream live logs, download PDF.</p>
+      </div>
+      
+    </div>
+  </div>
+</section>
+
+
+  </main>
+
+  
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-logo">
+        <strong>Chorus AI Systems</strong> — Earnings Call Dossier<br>
+        Built by Daniel Wipert
+      </div>
+      <ul class="footer-links">
+        <li><a href="https://github.com/danielwipert/dossier.ec" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="#pipeline">Architecture</a></li>
+        <li><a href="#theory">Theory</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+
+</body>
+</html>
